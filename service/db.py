@@ -1,0 +1,100 @@
+"""conduit-service 的存储层（SQLite）。core 仍是纯函数，状态都在这。
+
+skeleton 三张表：
+- subscriptions：注册表（id / type / note）。
+- imports：每次导入的原始内容（含节点凭据 = secret）+ 节点数 + 时间。
+- nodes：节点池，按 access_id 去重，带 first/last_seen（为后续标签 / 健康挂载）。
+
+⚠️ nodes/imports 含明文凭据 → 这个 DB 是 secret 载体：访问控制、别对公网暴露、别进 git。
+TODO：tags / health / traffic 表；连接池/并发；迁移；凭据加密。
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+
+from conduit.models import Node
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS subscriptions (
+  id         TEXT PRIMARY KEY,
+  type       TEXT NOT NULL DEFAULT 'clash',
+  note       TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS imports (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  sub_id     TEXT NOT NULL REFERENCES subscriptions(id),
+  raw        TEXT NOT NULL,
+  node_count INTEGER NOT NULL,
+  at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS nodes (
+  access_id  TEXT PRIMARY KEY,
+  sub_id     TEXT,
+  type       TEXT NOT NULL,
+  server     TEXT NOT NULL,
+  port       INTEGER NOT NULL,
+  raw_name   TEXT NOT NULL DEFAULT '',
+  params     TEXT NOT NULL DEFAULT '{}',
+  first_seen TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+
+class Store:
+    def __init__(self, path: str = ":memory:"):
+        self._conn = sqlite3.connect(path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._lock = threading.Lock()
+        with self._lock:
+            self._conn.executescript(_SCHEMA)
+
+    def add_subscription(self, sub_id: str, type: str = "clash", note: str = "") -> None:
+        with self._lock:
+            try:
+                self._conn.execute("INSERT INTO subscriptions(id, type, note) VALUES (?, ?, ?)", (sub_id, type, note))
+                self._conn.commit()
+            except sqlite3.IntegrityError as e:
+                raise ValueError(f"subscription 已存在: {sub_id}") from e
+
+    def get_subscription(self, sub_id: str) -> dict | None:
+        row = self._conn.execute("SELECT * FROM subscriptions WHERE id = ?", (sub_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_subscriptions(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT s.*, (SELECT COUNT(*) FROM nodes n WHERE n.sub_id = s.id) AS node_count "
+            "FROM subscriptions s ORDER BY s.created_at"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def import_nodes(self, sub_id: str, raw: str, nodes: list[Node]) -> int:
+        """记录一次导入，并按 access_id upsert 节点。返回本次节点数。"""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO imports(sub_id, raw, node_count) VALUES (?, ?, ?)", (sub_id, raw, len(nodes))
+            )
+            for n in nodes:
+                ep = n.access_id.endpoint
+                self._conn.execute(
+                    "INSERT INTO nodes(access_id, sub_id, type, server, port, raw_name, params) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(access_id) DO UPDATE SET sub_id=excluded.sub_id, raw_name=excluded.raw_name, "
+                    "params=excluded.params, last_seen=datetime('now')",
+                    (n.access_id.value, sub_id, ep.type, ep.server, ep.port, n.raw_name,
+                     json.dumps(n.params, ensure_ascii=False)),
+                )
+            self._conn.commit()
+            return len(nodes)
+
+    def list_nodes(self) -> list[dict]:
+        """列节点（**不含 params**，避免在 API 里泄露凭据）。"""
+        rows = self._conn.execute(
+            "SELECT access_id, sub_id, type, server, port, raw_name, first_seen, last_seen "
+            "FROM nodes ORDER BY type, server, port"
+        ).fetchall()
+        return [dict(r) for r in rows]
