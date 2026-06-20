@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from .models import AccessId, Node, NodeTags
+from .render import render as _render
 
 
 def fetch(sources: list[dict]) -> list[bytes]:
@@ -30,13 +31,9 @@ def prune(tagged: dict, health: dict) -> dict:
     raise NotImplementedError
 
 
-def render(tagged: dict, target: str, direct_list: dict, overlay: dict) -> str:
-    """渲染某个 target 的 mihomo 配置：proxies/provider + 标签 group + 规则
-    + 注入 direct_list（同时落到 DIRECT 规则 / fake-ip 放行 / TUN route-exclude）+ per-target overlay。
-
-    conduit 不关心 direct_list / overlay 里具体是什么——都是调用方的现状。
-    """
-    raise NotImplementedError
+def render(nodes: list[Node], target: str, direct_list: dict, overlay: dict) -> str:
+    """渲染某个 target 的 mihomo 配置（实现见 conduit/render.py）。"""
+    return _render(nodes, target, direct_list, overlay)
 
 
 def validate(config: str) -> None:
