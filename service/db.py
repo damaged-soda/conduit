@@ -17,7 +17,7 @@ import secrets
 import sqlite3
 import threading
 
-from conduit.models import Node
+from conduit.models import AccessId, EndpointId, Node
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS subscriptions (
@@ -45,6 +45,10 @@ CREATE TABLE IF NOT EXISTS nodes (
   params     TEXT NOT NULL DEFAULT '{}',
   first_seen TEXT NOT NULL DEFAULT (datetime('now')),
   last_seen  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 """
 
@@ -153,3 +157,38 @@ class Store:
         with self._lock:
             rows = self._conn.execute(q, args).fetchall()
         return [dict(r) for r in rows]
+
+    # ---- subscription serving ----
+
+    def get_sub_token(self) -> str:
+        """订阅 URL 的 token（首次自动生成并持久化）。"""
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM meta WHERE key = 'sub_token'").fetchone()
+            if row:
+                return row["value"]
+            token = secrets.token_urlsafe(16)
+            self._conn.execute("INSERT INTO meta(key, value) VALUES ('sub_token', ?)", (token,))
+            self._conn.commit()
+            return token
+
+    def nodes_for_render(self, sub_id: str | None = None) -> list[Node]:
+        """取节点并重建成 Node（**含 params 凭据**，仅服务内部渲染订阅用，绝不经 API 暴露）。"""
+        q = "SELECT access_id, sub_id, type, server, port, raw_name, params FROM nodes"
+        args: tuple = ()
+        if sub_id is not None:
+            q += " WHERE sub_id = ?"
+            args = (sub_id,)
+        with self._lock:
+            rows = self._conn.execute(q, args).fetchall()
+        out: list[Node] = []
+        for r in rows:
+            ep = EndpointId(type=r["type"], server=r["server"], port=r["port"])
+            out.append(
+                Node(
+                    access_id=AccessId(value=r["access_id"], endpoint=ep),
+                    raw_name=r["raw_name"],
+                    params=json.loads(r["params"]),
+                    source=r["sub_id"] or "",
+                )
+            )
+        return out
