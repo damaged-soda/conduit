@@ -18,4 +18,5 @@
 - 用 render() 真实产物替换手写配置。
 - 量化「kill→恢复」耗时对照 SLO；用 `/proxies/PROXY` 确认确实切换；长连接确认 chain=DIRECT。
 - 镜像固定 tag/digest；确认 `ginuerzh/gost` 版本（或换官方维护镜像）。
-- 测 TUN / 私有网旁路：mihomo 服务加 `cap_add: [NET_ADMIN]` + `/dev/net/tun`，并在同 netns 起那张私有网（见 TESTING.md）。
+- 测 TUN：mihomo 服务加 `cap_add: [NET_ADMIN]` + `/dev/net/tun`，留自己的 netns。
+- **rule#0 私有网旁路变体**（最关键）：privileged 容器跑真 overlay（如 tailscale，join 一次性 headscale）+ 同 netns mihomo-TUN，断言 TUN 开着时 peer 仍可达。设计见 TESTING.md「关键测试」。
