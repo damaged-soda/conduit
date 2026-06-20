@@ -3,6 +3,14 @@
 有状态的控制面：DB + 管理 API + 简单页面。跑在 **rig**（macmini 保持瘦）。core（`conduit/` 纯函数）是引擎，service 套在外面加状态。见仓库根 [ARCHITECTURE.md](../ARCHITECTURE.md)「控制面形态」。
 
 ## 跑
+
+**Docker（rig 上的目标部署）**：
+```
+docker compose -f deploy/compose.yaml up -d --build
+```
+DB 落在命名卷 `conduit-data`（含凭据，留 rig 磁盘）。默认只绑宿主 `127.0.0.1:8000`；要在 tailnet 上访问，改 compose 的端口绑定为 rig 私有网 IP + ACL，或用 `tailscale serve`。**别绑 0.0.0.0**（暂无认证）。
+
+**本地裸跑（开发）**：
 ```
 pip install -e '.[service]'
 uvicorn --factory service.app:make_app   # DB 路径用 CONDUIT_DB，默认 conduit.db
