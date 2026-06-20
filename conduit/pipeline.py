@@ -1,6 +1,7 @@
 """生成流水线骨架：定义阶段接口，不含真逻辑。
 
-阶段：fetch → normalize → tag → prune → render → validate → distribute
+阶段：fetch → normalize → tag → prune → render → validate
+送达（怎么把配置送到主机、怎么 reload）由调用方负责，不在核心流水线里。
 约束见 CONSTRAINTS.md，阶段说明见 ARCHITECTURE.md。
 """
 
@@ -29,10 +30,12 @@ def prune(tagged: dict, health: dict) -> dict:
     raise NotImplementedError
 
 
-def render(tagged: dict, host: str) -> str:
-    """渲染某台主机的 mihomo 配置：inline proxies + 标签 group + 规则 + per-host overlay。
+def render(tagged: dict, target: str, direct_list: list[str], overlay: dict) -> str:
+    """渲染某个 target 的 mihomo 配置：inline proxies + 标签 group + 规则
+    + 注入调用方提供的 direct_list + per-target overlay。
 
-    必须满足 rule#0：tailscale / DERP DIRECT 且最高优先级。
+    必须保证 direct_list 中的目的地 DIRECT 且最高优先级。
+    conduit 不关心 direct_list / overlay 里具体是什么——都是调用方的现状。
     """
     raise NotImplementedError
 
