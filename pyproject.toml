@@ -1,7 +1,7 @@
 [project]
 name = "conduit"
 version = "0.0.0"
-description = "fleet 出站代理控制面：订阅 → 可靠 mihomo 配置生成器"
+description = "mihomo 配置控制面：订阅 → 可靠 mihomo 配置生成器"
 requires-python = ">=3.11"
 dependencies = []
 
