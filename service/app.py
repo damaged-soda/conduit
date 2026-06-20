@@ -189,10 +189,10 @@ async function renderDetail(){
     el('div', `${sub.type} · ${sub.node_count} 节点 · URL ${sub.has_url?'已设置':'未设置'}`),
     row(el('label','名字：'),name,btn('保存名字',async()=>{await patch({name:name.value});setMsg('已改名')})),
     row(el('label','URL：'),url,
-        btn('保存 URL',async()=>{await patch({url:url.value});url.value='';setMsg('URL 已更新')}),
-        btn('🔄 按 URL 刷新',async()=>{try{const r=await jpost(`/api/subscriptions/${SEL}/refresh`);setMsg('刷新：导入 '+r.imported+' 节点')}catch(e){setMsg('刷新失败: '+e.message)}})),
+        btn('保存 URL',async()=>{if(!url.value){setMsg('URL 留空，未改');return}await patch({url:url.value});setMsg('URL 已更新')}),
+        btn('🔄 按 URL 刷新',async()=>{try{const r=await jpost(`/api/subscriptions/${SEL}/refresh`);const n=r.imported;await select(SEL);setMsg('刷新：导入 '+n+' 节点')}catch(e){setMsg('刷新失败: '+e.message)}})),
     el('div','文件导入：'), raw,
-    row(btn('导入文件',async()=>{try{const r=await jpost(`/api/subscriptions/${SEL}/import`,{raw:raw.value});raw.value='';setMsg('导入 '+r.imported+' 节点')}catch(e){setMsg('导入失败: '+e.message)}}),
+    row(btn('导入文件',async()=>{try{const r=await jpost(`/api/subscriptions/${SEL}/import`,{raw:raw.value});const n=r.imported;await select(SEL);setMsg('导入 '+n+' 节点')}catch(e){setMsg('导入失败: '+e.message)}}),
         btn('🗑 删除订阅',async()=>{if(confirm('删除该订阅及其节点？')){await j(`/api/subscriptions/${SEL}`,{method:'DELETE'});SEL=null;await loadSubs();document.getElementById('detail').replaceChildren(el('p','已删除。'))}}),
         msg),
   );

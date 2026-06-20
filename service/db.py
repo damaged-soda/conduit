@@ -116,7 +116,11 @@ class Store:
     # ---- nodes ----
 
     def import_nodes(self, sub_id: str, raw: str, nodes: list[Node]) -> int:
-        """记录一次导入，并按 access_id upsert 节点。返回本次节点数。"""
+        """记录一次导入，并按 access_id upsert 节点。返回本次节点数。
+
+        节点是**全局池**（access_id 唯一）；同一 access_id 跨订阅出现时，`sub_id` 归**最后导入的那条**
+        （「全局池，后导入者赢」）。真·多订阅归属 = later（需要成员表）。
+        """
         with self._lock:
             try:
                 self._conn.execute(
