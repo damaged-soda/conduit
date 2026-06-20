@@ -1,0 +1,10 @@
+[project]
+name = "conduit"
+version = "0.0.0"
+description = "fleet 出站代理控制面：订阅 → 可靠 mihomo 配置生成器"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100

@@ -1,0 +1,16 @@
+# secrets / 当前值
+secrets/*
+!secrets/.gitkeep
+*.env
+.env
+
+# 生成产物
+/out/
+*.generated.yaml
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.mypy_cache/
+.ruff_cache/
