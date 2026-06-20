@@ -1,0 +1,28 @@
+# 集成测试用 mihomo 配置（无 TUN）。上游指向 compose 里的 mock 代理。
+# 健康检查打本地 echo-health（隔离网无公网，不能用 gstatic）。
+# 临时手写；后续换成 render() 的真实产物。
+mixed-port: 7890
+allow-lan: true          # 不开则混合端口只绑 127.0.0.1，tester 跨容器连不上
+bind-address: "*"
+mode: rule
+log-level: info
+external-controller: 0.0.0.0:9090
+
+proxies:
+  - { name: up-a, type: socks5, server: upstream-a, port: 1080 }
+  - { name: up-b, type: socks5, server: upstream-b, port: 1080 }
+
+proxy-groups:
+  - name: PROXY
+    type: fallback
+    proxies: [up-a, up-b]
+    url: http://echo-health:5678          # 经上游连到本地健康目标
+    expected-status: "200"                # http-echo 返回 200
+    interval: 10
+    timeout: 2000
+    lazy: false
+
+rules:
+  # echo-direct 视作「必须直连」目标，验证旁路不走代理
+  - DOMAIN,echo-direct,DIRECT
+  - MATCH,PROXY

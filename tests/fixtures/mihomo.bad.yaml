@@ -1,0 +1,18 @@
+# 负例夹具：故意违反多条不变量，用来证明检查「有牙」（不是假绿）。
+# 预期被抓到：① direct 规则在 MATCH 之后（不在最前 + 最后不是 MATCH）
+#            ② 规则直接指向具体节点 up-a（应只引用 group）
+#            ③ group 引用了不存在的成员 ghost
+mixed-port: 7890
+mode: rule
+
+proxies:
+  - { name: up-a, type: socks5, server: placeholder-a, port: 1080 }
+
+proxy-groups:
+  - name: PROXY
+    type: fallback
+    proxies: [up-a, ghost]          # ghost 不存在 → group_members 违规
+
+rules:
+  - MATCH,up-a                       # 直接指向节点 + MATCH 不在最后
+  - DOMAIN-SUFFIX,example-internal,DIRECT  # direct 规则排在 MATCH 之后

@@ -1,0 +1,52 @@
+# conduit 集成测试台（TESTING.md 第 2 层）：**无外网**的隔离 Linux 网络里跑 mihomo + 可 kill 的
+# mock 上游，经代理端口 / API 验证路由与故障切换。先不开 TUN。
+#
+# 拓扑保证「走没走对路」是结构化的（不是看返回字符串就信）：
+#   - echo-proxied 只在 backnet：mihomo 不在 backnet，必须经 upstream 才能到 → 成功 = 真走了代理。
+#   - echo-direct  只在 directnet：upstream 不在 directnet → 成功 = 真走了直连（被错误代理会失败）。
+#
+# ⚠️ Docker on Mac 是 Linux VM —— 这层验的是 Linux/rig 路径；macOS 原生 TUN 上残差冒烟（见 TESTING.md）。
+# TODO: 镜像固定 tag/digest 保证可复现（现用 latest）。
+name: conduit-test
+
+services:
+  mihomo:                       # 被测；只接 directnet + frontnet，**不接 backnet**
+    image: metacubex/mihomo:latest
+    command: ["-d", "/cfg"]
+    volumes:
+      - ./mihomo.proxy-only.yaml:/cfg/config.yaml:ro
+    networks: [directnet, frontnet]
+    # 要测 TUN 时再加：cap_add: [NET_ADMIN]; devices: ["/dev/net/tun"]
+
+  upstream-a:                   # 可被 kill 的 mock 上游；桥接 frontnet ↔ backnet
+    image: ginuerzh/gost:latest
+    command: ["-L", "socks5://:1080"]
+    networks: [frontnet, backnet]
+  upstream-b:
+    image: ginuerzh/gost:latest
+    command: ["-L", "socks5://:1080"]
+    networks: [frontnet, backnet]
+
+  echo-health:                  # 本地健康检查目标（经 upstream 到达，隔离网无公网不能用 gstatic）
+    image: hashicorp/http-echo:latest
+    command: ["-text=ok", "-listen=:5678"]
+    networks: [backnet]
+  echo-proxied:                 # 只在 backnet → mihomo 必须经代理才能到
+    image: hashicorp/http-echo:latest
+    command: ["-text=proxied", "-listen=:5678"]
+    networks: [backnet]
+  echo-direct:                  # 只在 directnet → 只能直连到达
+    image: hashicorp/http-echo:latest
+    command: ["-text=direct", "-listen=:5678"]
+    networks: [directnet]
+
+  tester:                       # 测试驱动（见 run.sh）；经 directnet 到 mihomo
+    image: curlimages/curl:latest
+    depends_on: [mihomo, upstream-a, upstream-b, echo-health, echo-proxied, echo-direct]
+    entrypoint: ["sleep", "infinity"]
+    networks: [directnet]
+
+networks:                       # 全部 internal：真隔离，无外网出口
+  directnet: { driver: bridge, internal: true }   # mihomo ↔ echo-direct ↔ tester
+  frontnet:  { driver: bridge, internal: true }   # mihomo ↔ upstreams
+  backnet:   { driver: bridge, internal: true }   # upstreams ↔ echo-proxied / echo-health（mihomo 不在此）

@@ -9,5 +9,6 @@ conduit **不感知任何具体拓扑** —— 主机叫什么、有没有私有
 - 硬约束 / 不变量 → [CONSTRAINTS.md](CONSTRAINTS.md)
 - 架构与生成流水线 → [ARCHITECTURE.md](ARCHITECTURE.md)
 - 仓库工作约定 → [AGENTS.md](AGENTS.md)
+- 怎么安全地测 → [TESTING.md](TESTING.md)
 
 > 订阅 URL、secret、调用方喂入的现状值、生成产物 —— 都不进 git。
