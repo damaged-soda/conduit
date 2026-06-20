@@ -17,5 +17,7 @@ uvicorn --factory service.app:make_app   # DB 路径用 CONDUIT_DB，默认 cond
 
 存储：`service/db.py`（SQLite，三表 subscriptions/imports/nodes）。⚠️ 含明文凭据 = secret 载体，别对公网暴露、别进 git。
 
+⚠️ **骨架暂无认证** —— 只在 uvicorn 默认 `127.0.0.1` 下可接受。上 tailnet 前必须有 Tailscale ACL / 防火墙边界，**别裸绑到共享网络**（认证本身归 later）。
+
 ## TODO（后续增量）
 tag（地区/人工 + 隔离区）、render + pull（各机拉配置 + reload）、health、traffic、认证、secret 加密、连接并发。

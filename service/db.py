@@ -62,39 +62,46 @@ class Store:
                 raise ValueError(f"subscription 已存在: {sub_id}") from e
 
     def get_subscription(self, sub_id: str) -> dict | None:
-        row = self._conn.execute("SELECT * FROM subscriptions WHERE id = ?", (sub_id,)).fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM subscriptions WHERE id = ?", (sub_id,)).fetchone()
         return dict(row) if row else None
 
     def list_subscriptions(self) -> list[dict]:
-        rows = self._conn.execute(
-            "SELECT s.*, (SELECT COUNT(*) FROM nodes n WHERE n.sub_id = s.id) AS node_count "
-            "FROM subscriptions s ORDER BY s.created_at"
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT s.*, (SELECT COUNT(*) FROM nodes n WHERE n.sub_id = s.id) AS node_count "
+                "FROM subscriptions s ORDER BY s.created_at"
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def import_nodes(self, sub_id: str, raw: str, nodes: list[Node]) -> int:
         """记录一次导入，并按 access_id upsert 节点。返回本次节点数。"""
         with self._lock:
-            self._conn.execute(
-                "INSERT INTO imports(sub_id, raw, node_count) VALUES (?, ?, ?)", (sub_id, raw, len(nodes))
-            )
-            for n in nodes:
-                ep = n.access_id.endpoint
+            try:
                 self._conn.execute(
-                    "INSERT INTO nodes(access_id, sub_id, type, server, port, raw_name, params) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?) "
-                    "ON CONFLICT(access_id) DO UPDATE SET sub_id=excluded.sub_id, raw_name=excluded.raw_name, "
-                    "params=excluded.params, last_seen=datetime('now')",
-                    (n.access_id.value, sub_id, ep.type, ep.server, ep.port, n.raw_name,
-                     json.dumps(n.params, ensure_ascii=False)),
+                    "INSERT INTO imports(sub_id, raw, node_count) VALUES (?, ?, ?)", (sub_id, raw, len(nodes))
                 )
-            self._conn.commit()
+                for n in nodes:
+                    ep = n.access_id.endpoint
+                    self._conn.execute(
+                        "INSERT INTO nodes(access_id, sub_id, type, server, port, raw_name, params) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                        "ON CONFLICT(access_id) DO UPDATE SET sub_id=excluded.sub_id, raw_name=excluded.raw_name, "
+                        "params=excluded.params, last_seen=datetime('now')",
+                        (n.access_id.value, sub_id, ep.type, ep.server, ep.port, n.raw_name,
+                         json.dumps(n.params, ensure_ascii=False)),
+                    )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()  # 整批导入原子化：中途失败不留半成品
+                raise
             return len(nodes)
 
     def list_nodes(self) -> list[dict]:
         """列节点（**不含 params**，避免在 API 里泄露凭据）。"""
-        rows = self._conn.execute(
-            "SELECT access_id, sub_id, type, server, port, raw_name, first_seen, last_seen "
-            "FROM nodes ORDER BY type, server, port"
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT access_id, sub_id, type, server, port, raw_name, first_seen, last_seen "
+                "FROM nodes ORDER BY type, server, port"
+            ).fetchall()
         return [dict(r) for r in rows]

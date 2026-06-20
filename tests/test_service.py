@@ -46,6 +46,13 @@ def test_import_unknown_sub_404():
     assert c.post("/api/subscriptions/nope/import", json={"raw": "proxies: []"}).status_code == 404
 
 
+def test_malformed_yaml_import_returns_400():
+    c = _client()
+    c.post("/api/subscriptions", json={"id": "v"})
+    r = c.post("/api/subscriptions/v/import", json={"raw": "proxies: 'unterminated"})
+    assert r.status_code == 400  # 坏 YAML 是 sanitized 400，不是 500
+
+
 def test_duplicate_sub_409():
     c = _client()
     c.post("/api/subscriptions", json={"id": "v"})

@@ -3,13 +3,14 @@
 skeleton 能力：建订阅、导入 clash 内容（→ normalize → 存节点）、列订阅/节点、一个简单页面。
 TODO：tag（地区/人工）、render + pull（各机拉配置）、health、traffic、认证、secret 处理。
 
-跑：`uvicorn service.app:app`（DB 路径用环境变量 CONDUIT_DB，默认 conduit.db）。
+跑：`uvicorn --factory service.app:make_app`（DB 路径用环境变量 CONDUIT_DB，默认 conduit.db）。
 """
 
 from __future__ import annotations
 
 import os
 
+import yaml
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -54,6 +55,8 @@ def create_app(db_path: str = ":memory:") -> FastAPI:
             nodes = normalize(body.raw, sub["type"], sub_id)
         except ValueError as e:
             raise HTTPException(400, str(e))
+        except yaml.YAMLError:  # 坏 YAML → sanitized 400，不回显内容/parser 细节
+            raise HTTPException(400, "导入内容不是合法的 clash YAML")
         return {"imported": store.import_nodes(sub_id, body.raw, nodes)}
 
     @app.get("/api/nodes")
@@ -88,16 +91,18 @@ textarea{width:100%;height:120px;box-sizing:border-box}input,button,select{paddi
 <h2>节点池</h2>
 <table id="nodes"><thead><tr><th>type</th><th>server</th><th>port</th><th>名</th><th>来源</th></tr></thead><tbody></tbody></table>
 <script>
+// 全部数据走 textContent（非 innerHTML），避免订阅来的 raw_name 等造成 XSS
+function el(t,x){const e=document.createElement(t);if(x!=null)e.textContent=x;return e}
 async function j(u,o){const r=await fetch(u,o);if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||r.status);return r.json()}
 async function refresh(){
   const subs=await j('/api/subscriptions');
-  document.getElementById('subs').innerHTML=subs.map(s=>`<li>${s.id} (${s.type}) — ${s.node_count} 节点</li>`).join('');
-  document.getElementById('impSel').innerHTML=subs.map(s=>`<option>${s.id}</option>`).join('');
+  document.getElementById('subs').replaceChildren(...subs.map(s=>el('li',`${s.id} (${s.type}) — ${s.node_count} 节点`)));
+  document.getElementById('impSel').replaceChildren(...subs.map(s=>{const o=el('option',s.id);o.value=s.id;return o}));
   const nodes=await j('/api/nodes');
-  document.querySelector('#nodes tbody').innerHTML=nodes.map(n=>`<tr><td>${n.type}</td><td>${n.server}</td><td>${n.port}</td><td>${n.raw_name}</td><td>${n.sub_id||''}</td></tr>`).join('');
+  document.querySelector('#nodes tbody').replaceChildren(...nodes.map(n=>{const tr=document.createElement('tr');[n.type,n.server,n.port,n.raw_name,n.sub_id||''].forEach(v=>tr.appendChild(el('td',String(v))));return tr}));
 }
-async function addSub(e){e.preventDefault();const sid=document.getElementById('sid');await j('/api/subscriptions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:sid.value})});sid.value='';refresh()}
-async function doImport(){const m=document.getElementById('impMsg');try{const r=await j('/api/subscriptions/'+document.getElementById('impSel').value+'/import',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({raw:document.getElementById('raw').value})});m.textContent='导入 '+r.imported+' 节点';refresh()}catch(e){m.textContent='失败: '+e.message}}
+async function addSub(e){e.preventDefault();const s=document.getElementById('sid');await j('/api/subscriptions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:s.value})});s.value='';refresh()}
+async function doImport(){const m=document.getElementById('impMsg');try{const id=document.getElementById('impSel').value;const r=await j('/api/subscriptions/'+encodeURIComponent(id)+'/import',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({raw:document.getElementById('raw').value})});m.textContent='导入 '+r.imported+' 节点';refresh()}catch(e){m.textContent='失败: '+e.message}}
 refresh();
 </script>
 </body></html>
