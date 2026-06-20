@@ -28,6 +28,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
+          # 关掉 auto-latest：否则打 v* tag（甚至给旧 commit 打）也会移动 latest，导致 rig 回滚。
+          flavor: latest=false
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=tag
