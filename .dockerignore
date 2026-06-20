@@ -5,6 +5,10 @@ __pycache__/
 *.db
 *.sqlite3
 secrets/
+.env
+*.env
+/out/
+*.generated.yaml
 .venv/
 .pytest_cache/
 .ruff_cache/
