@@ -1,0 +1,15 @@
+# conduit-service 镜像（跑在 rig）。core(conduit) + service 一起装。
+# 构建上下文 = 仓库根（见 deploy/compose.yaml）。镜像里不带 db/secrets（见 .dockerignore）。
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY pyproject.toml ./
+COPY conduit/ ./conduit/
+COPY service/ ./service/
+RUN pip install --no-cache-dir '.[service]' && mkdir -p /data
+
+ENV CONDUIT_DB=/data/conduit.db
+EXPOSE 8000
+
+# 容器内绑 0.0.0.0（隔离 netns）；对外暴露由 compose 的端口映射控制（默认只到宿主 localhost）。
+CMD ["uvicorn", "--factory", "service.app:make_app", "--host", "0.0.0.0", "--port", "8000"]

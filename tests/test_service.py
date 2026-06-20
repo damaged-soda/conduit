@@ -1,0 +1,135 @@
+"""conduit-service 测试：主从式订阅 CRUD（id 不透明 + name 可改）+ 摄入（URL/文件）+ 节点明细。
+
+经 FastAPI TestClient + 内存 SQLite；URL 拉取注入假 fetcher，不碰真网络。
+"""
+
+from __future__ import annotations
+
+import pathlib
+import sys
+
+import pytest
+
+HERE = pathlib.Path(__file__).parent
+sys.path.insert(0, str(HERE.parent))  # repo root：conduit + service 包
+
+pytest.importorskip("fastapi")
+from fastapi.testclient import TestClient  # noqa: E402
+
+from service.app import create_app  # noqa: E402
+
+FIXTURE = (HERE / "fixtures" / "sub.clash.yaml").read_text()
+
+
+def _client() -> TestClient:
+    return TestClient(create_app(":memory:"))
+
+
+def _mksub(c: TestClient, name: str = "vendor-a", url: str | None = None) -> str:
+    r = c.post("/api/subscriptions", json={"name": name, "url": url})
+    assert r.status_code == 200
+    return r.json()["id"]
+
+
+def test_create_returns_opaque_id_and_lists_name():
+    c = _client()
+    sid = _mksub(c, "My VPN")
+    sub = c.get("/api/subscriptions").json()[0]
+    assert sub["id"] == sid and sub["name"] == "My VPN"
+    assert sid != "My VPN" and "url" not in sub  # id 不透明、url 不泄露
+
+
+def test_import_into_subscription_and_detail_nodes():
+    c = _client()
+    sid = _mksub(c)
+    assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE}).json()["imported"] == 2
+    assert len(c.get(f"/api/subscriptions/{sid}/nodes").json()) == 2
+    assert "params" not in c.get(f"/api/subscriptions/{sid}/nodes").json()[0]  # 不泄露凭据
+
+
+def test_refresh_fetches_url_and_imports():
+    c = TestClient(create_app(":memory:", fetcher=lambda url: FIXTURE))
+    sid = _mksub(c, "v", "https://example/sub")
+    assert c.post(f"/api/subscriptions/{sid}/refresh").json()["imported"] == 2
+    sub = c.get("/api/subscriptions").json()[0]
+    assert sub["has_url"] == 1 and "url" not in sub
+
+
+def test_patch_rename():
+    c = _client()
+    sid = _mksub(c, "old")
+    assert c.patch(f"/api/subscriptions/{sid}", json={"name": "new"}).status_code == 200
+    assert c.get("/api/subscriptions").json()[0]["name"] == "new"
+
+
+def test_patch_url_then_refresh():
+    c = TestClient(create_app(":memory:", fetcher=lambda url: FIXTURE))
+    sid = _mksub(c, "v")  # 先没 url
+    c.patch(f"/api/subscriptions/{sid}", json={"url": "https://e/sub"})
+    assert c.post(f"/api/subscriptions/{sid}/refresh").json()["imported"] == 2
+
+
+def test_delete_subscription_removes_nodes():
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    assert c.delete(f"/api/subscriptions/{sid}").status_code == 200
+    assert c.get("/api/subscriptions").json() == []
+    assert c.get("/api/nodes").json() == []
+
+
+def test_url_scheme_validated():
+    c = _client()
+    assert c.post("/api/subscriptions", json={"name": "v", "url": "file:///etc/passwd"}).status_code == 400
+
+
+def test_refresh_without_url_400():
+    c = _client()
+    sid = _mksub(c)
+    assert c.post(f"/api/subscriptions/{sid}/refresh").status_code == 400
+
+
+def test_refresh_fetch_failure_502():
+    def boom(url):
+        raise RuntimeError("network down")
+
+    c = TestClient(create_app(":memory:", fetcher=boom))
+    sid = _mksub(c, "v", "https://x/sub")
+    assert c.post(f"/api/subscriptions/{sid}/refresh").status_code == 502
+
+
+def test_import_unknown_sub_404():
+    assert _client().post("/api/subscriptions/nope/import", json={"raw": "proxies: []"}).status_code == 404
+
+
+def test_malformed_yaml_import_returns_400():
+    c = _client()
+    sid = _mksub(c)
+    assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": "proxies: 'unterminated"}).status_code == 400
+
+
+def test_bad_proxy_import_sanitized_400():
+    c = _client()
+    sid = _mksub(c)
+    bad = "proxies:\n  - {name: x, type: ss, server: s.com, port: NOTAPORT, password: p}\n"
+    r = c.post(f"/api/subscriptions/{sid}/import", json={"raw": bad})
+    assert r.status_code == 400 and "NOTAPORT" not in r.json()["detail"]
+
+
+def test_migration_adds_name_and_url_to_old_db(tmp_path):
+    import sqlite3
+
+    from service.db import Store
+
+    p = tmp_path / "old.db"
+    conn = sqlite3.connect(p)  # 旧 schema：subscriptions 无 name/url
+    conn.execute("CREATE TABLE subscriptions (id TEXT PRIMARY KEY, type TEXT, note TEXT, created_at TEXT)")
+    conn.execute("INSERT INTO subscriptions(id, type) VALUES ('westdata', 'clash')")
+    conn.commit()
+    conn.close()
+    sub = Store(str(p)).get_subscription("westdata")  # 迁移补 name(=id) + url
+    assert sub["name"] == "westdata" and "url" in sub
+
+
+def test_index_page():
+    assert _client().get("/").status_code == 200
