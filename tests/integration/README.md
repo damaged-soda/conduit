@@ -1,22 +1,22 @@
-# 集成测试台（Docker，TESTING.md 第 2 层）
+# 集成测试台（Docker，本地 + GitHub PR CI）
 
-**无外网**的隔离 Linux 网络里跑 mihomo + 可 kill 的 mock 上游，经代理端口 / API 验证**路由**与**故障切换**。先不开 TUN。
+用 **render 的真实产出** 跑 mihomo，在隔离网络里断言**路由语义**（不是手写配置、也不只看 `mihomo -t` 合法性）：
+- 私网 IP（`172.28.0.5`）→ **直连**（命中 render 的 rule#0 兜底）；
+- 域名 → **代理**（经 upstream）；
+- kill upstream → **切换**。
 
-⚠️ Docker on Mac 是 Linux VM —— 这层验的是 **Linux/rig 路径**；macOS 原生 TUN/utun 要上 MBA 实机（TESTING.md 第 3 层）。
+代理模式（不开 TUN），GitHub runner / 本地 Docker 都能跑。
 
 ## 组成
-- `compose.yaml`：mihomo + upstream-a/b（gost，可 kill）+ echo-health + echo-proxied/echo-direct + tester。三张 `internal` 网络做**结构化证明**：echo-proxied 只在 backnet（mihomo 必须经 upstream → 证明走代理）、echo-direct 只在 directnet（upstream 到不了 → 证明走直连）。全程无公网。
-- `mihomo.proxy-only.yaml`：被测的 mihomo 配置（无 TUN，上游指向 compose mock 代理，健康检查打 echo-health）。**临时手写，后续换成 render() 产物**。
-- `run.sh`：测试流程（readiness → 路由 → 故障切换）。**首版断言，未在本机实跑验证**——在 MBA 上跑通后固化。
+- `gen_config.py`：合成 socks5 节点指向 gost 上游 → `build_subscription`（含 rule#0 兜底）→ 补客户端实例设置（mixed-port/controller，订阅本身不含）→ `mihomo.generated.yaml`（gitignored）；健康检查指本地 echo-health（隔离网无公网）。
+- `compose.yaml`：3 张 `internal` 网络做结构化证明 —— echo-proxied 只在 backnet（只能经 upstream 到 = 走代理），echo-direct `172.28.0.5` 只在 directnet（upstream 够不到 = 只能直连）。
+- `run.sh`：gen → up → 三条断言 → down。
 
 ## 跑
 ```
-./run.sh
+pip install -e .            # 让 python3 能 import conduit + pyyaml
+./run.sh                    # 本地可 PYTHON=/path/to/venv/bin/python ./run.sh
 ```
+CI 见 `.github/workflows/ci.yml` 的 `integration` job（PR 触发）。
 
-## 待补
-- 用 render() 真实产物替换手写配置。
-- 量化「kill→恢复」耗时对照 SLO；用 `/proxies/PROXY` 确认确实切换；长连接确认 chain=DIRECT。
-- 镜像固定 tag/digest；确认 `ginuerzh/gost` 版本（或换官方维护镜像）。
-- 测 TUN：mihomo 服务加 `cap_add: [NET_ADMIN]` + `/dev/net/tun`，留自己的 netns。
-- **rule#0 私有网旁路变体**（最关键）：privileged 容器跑真 overlay（如 tailscale，join 一次性 headscale）+ 同 netns mihomo-TUN，断言 TUN 开着时 peer 仍可达。设计见 TESTING.md「关键测试」。
+⚠️ 代理模式验的是**规则语义**（含 rule#0）的 Linux 路径；macOS 原生 TUN / tailscale 旁路的真实测试要 privileged + 同 netns 起 tailscale，留 later（见 ../../TESTING.md）。
