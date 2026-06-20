@@ -89,5 +89,28 @@ def test_refresh_fetch_failure_502():
     assert c.post("/api/subscriptions/v/refresh").status_code == 502  # 抓取失败 → 502，不回显 url
 
 
+def test_bad_proxy_import_sanitized_400():
+    c = _client()
+    c.post("/api/subscriptions", json={"id": "v"})
+    bad = "proxies:\n  - {name: x, type: ss, server: s.com, port: NOTAPORT, password: p}\n"
+    r = c.post("/api/subscriptions/v/import", json={"raw": bad})
+    assert r.status_code == 400 and "NOTAPORT" not in r.json()["detail"]  # 不回显订阅内容
+
+
+def test_migration_adds_url_column_to_old_db(tmp_path):
+    import sqlite3
+
+    from service.db import Store
+
+    p = tmp_path / "old.db"
+    conn = sqlite3.connect(p)  # 旧 schema：subscriptions 无 url 列
+    conn.execute("CREATE TABLE subscriptions (id TEXT PRIMARY KEY, type TEXT, note TEXT, created_at TEXT)")
+    conn.commit()
+    conn.close()
+    s = Store(str(p))  # 应迁移补上 url 列
+    s.add_subscription("v", url="https://x/sub")
+    assert s.get_subscription("v")["url"] == "https://x/sub"
+
+
 def test_index_page():
     assert _client().get("/").status_code == 200

@@ -53,6 +53,14 @@ class Store:
         self._lock = threading.Lock()
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            self._migrate_locked()
+
+    def _migrate_locked(self) -> None:
+        """轻量迁移：给旧 DB（骨架早期版本）补上后加的列。`CREATE TABLE IF NOT EXISTS` 不会改已有表。"""
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(subscriptions)").fetchall()}
+        if "url" not in cols:
+            self._conn.execute("ALTER TABLE subscriptions ADD COLUMN url TEXT")
+            self._conn.commit()
 
     def add_subscription(self, sub_id: str, type: str = "clash", note: str = "", url: str | None = None) -> None:
         with self._lock:

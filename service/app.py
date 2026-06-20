@@ -37,10 +37,8 @@ class ImportIn(BaseModel):
 def _normalize_and_store(store: Store, sub: dict, raw: str) -> dict:
     try:
         nodes = normalize(raw, sub["type"], sub["id"])
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except yaml.YAMLError:  # 坏 YAML → sanitized 400，不回显内容/parser 细节
-        raise HTTPException(400, "导入内容不是合法的 clash YAML")
+    except (ValueError, yaml.YAMLError):  # sanitized 400：不回显订阅内容 / parser 细节
+        raise HTTPException(400, "导入内容解析失败（请确认是合法的 clash 订阅）")
     return {"imported": store.import_nodes(sub["id"], raw, nodes)}
 
 
