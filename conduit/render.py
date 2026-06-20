@@ -1,35 +1,59 @@
-"""render：把（已打标 / 剔除后的）节点 + 调用方输入，渲染成一份 mihomo 配置。
+"""render：把（已打标 / 剔除后的 **active**）节点 + 调用方输入，渲染成一份 mihomo 配置。
+
+输入契约：`nodes` 必须是「允许进入配置」的 active 节点（隔离区 / 长期不健康的已在上游剔除）。
+render 不做 quarantine 过滤。
 
 v1（最小可用）：
 - 单 `PROXY` fallback 组 over 所有 active 节点；
-- direct-list 落到三处：DIRECT 规则（最前）+ fake-ip 放行 + TUN route-exclude；
-- overlay 驱动 listen / controller / tun / dns；默认不开 allow-lan（生产安全）。
+- direct-list 落三处：DIRECT 规则（最前）+ fake-ip 放行 + TUN route-exclude；
+- overlay 驱动 listen / controller / tun / dns；默认不开 allow-lan（生产安全）；
+- proxy 名去重 + 避开保留/group 名；空节点 fail-closed；params 不得覆盖核心身份字段；
+  controller 非 loopback 且无 secret 时拒绝生成。
 
 不变量见 CONSTRAINTS.md，由 tests/ 的 golden 不变量直接断言本函数产出。
 
-TODO：tag 表达式分组（v1 单组）、各协议字段完整映射、proxy 名 ↔ access_id 稳定映射、
-空组兜底、controller secret 部署期注入、生产 controller 必须 loopback 的不变量。
+TODO：tag 表达式分组（v1 单组）、各协议字段完整映射、proxy 名 ↔ access_id 稳定映射（v1 仅去重）、
+domain_wildcard → fake-ip 语义对齐、IPv6 controller bind 解析、validate 里做输入校验。
 """
 
 from __future__ import annotations
+
+import hashlib
 
 import yaml
 
 from .models import Node
 
 _HEALTH_URL = "http://www.gstatic.com/generate_204"
+_RESERVED_NAMES = {"DIRECT", "REJECT", "REJECT-DROP", "PASS", "GLOBAL", "COMPATIBLE", "PROXY"}
+_CORE_KEYS = {"name", "type", "server", "port"}
+_LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
 
-def _proxy_name(n: Node) -> str:
-    # TODO: 稳定的 proxy 名 ↔ access_id 映射（健康回路要用）；v1 先用原始名。
-    return n.raw_name
+def _short(aid_value: str) -> str:
+    return hashlib.sha1(aid_value.encode()).hexdigest()[:6]
 
 
-def _node_to_proxy(n: Node) -> dict:
+def _assign_names(nodes: list[Node]) -> list[str]:
+    """给每个节点一个去重、且不撞保留名/group 名的 proxy 名。v1 用 raw_name(+access_id 短哈希)。"""
+    used: set[str] = set()
+    out: list[str] = []
+    for n in nodes:
+        base = n.raw_name or "node"
+        name = base if base not in used and base not in _RESERVED_NAMES else f"{base}-{_short(n.access_id.value)}"
+        i = 2
+        while name in used or name in _RESERVED_NAMES:
+            name = f"{base}-{_short(n.access_id.value)}-{i}"
+            i += 1
+        used.add(name)
+        out.append(name)
+    return out
+
+
+def _node_to_proxy(n: Node, name: str) -> dict:
     ep = n.access_id.endpoint
-    proxy = {"name": _proxy_name(n), "type": ep.type, "server": ep.server, "port": ep.port}
-    proxy.update(n.params or {})  # 协议字段（cipher/uuid/password/sni…）
-    return proxy
+    safe = {k: v for k, v in (n.params or {}).items() if k not in _CORE_KEYS}  # params 不得覆盖核心身份
+    return {"name": name, "type": ep.type, "server": ep.server, "port": ep.port, **safe}
 
 
 def _direct_rules(direct: dict) -> list[str]:
@@ -55,8 +79,11 @@ def _fake_ip_filter(direct: dict) -> list[str]:
 
 def build_config(nodes: list[Node], direct: dict, overlay: dict) -> dict:
     """渲染成 mihomo 配置 dict（rules 顺序关键：direct-list 必须在最前）。"""
-    proxies = [_node_to_proxy(n) for n in nodes]
-    names = [p["name"] for p in proxies]
+    if not nodes:
+        raise ValueError("render: 无 active 节点，fail-closed 拒绝生成空配置")
+
+    names = _assign_names(nodes)
+    proxies = [_node_to_proxy(n, nm) for n, nm in zip(nodes, names)]
 
     listen = overlay.get("listen", "127.0.0.1:7890")
     host, _, port = listen.rpartition(":")
@@ -69,10 +96,14 @@ def build_config(nodes: list[Node], direct: dict, overlay: dict) -> dict:
     cfg["mode"] = "rule"
 
     controller = overlay.get("controller", {})
-    if controller.get("bind"):
-        cfg["external-controller"] = controller["bind"]
-    if controller.get("secret"):  # 真实 secret 部署期注入；*_ref 不进配置
-        cfg["secret"] = controller["secret"]
+    bind = controller.get("bind")
+    if bind:
+        chost, _, _ = bind.rpartition(":")
+        if chost not in _LOOPBACK and not controller.get("secret"):
+            raise ValueError(f"render: controller 绑定非 loopback({bind}) 但无 secret —— 拒绝生成（生产安全）")
+        cfg["external-controller"] = bind
+        if controller.get("secret"):  # 真实 secret 部署期注入；*_ref 不进配置
+            cfg["secret"] = controller["secret"]
 
     if overlay.get("dns", {}).get("fake_ip"):
         cfg["dns"] = {
@@ -83,15 +114,20 @@ def build_config(nodes: list[Node], direct: dict, overlay: dict) -> dict:
             "nameserver": ["https://1.1.1.1/dns-query"],
         }
 
-    if overlay.get("tun", {}).get("enable"):
+    tun = overlay.get("tun", {})
+    if tun.get("enable"):
+        excludes = list(direct.get("ip_cidr", []))
+        for c in tun.get("route_exclude", []) or []:  # 合入 per-target 专属排除
+            if c not in excludes:
+                excludes.append(c)
         cfg["tun"] = {
             "enable": True,
             "stack": "system",
             "auto-route": True,
             "auto-detect-interface": True,
             "strict-route": True,
-            "dns-hijack": ["any:53"],
-            "route-exclude-address": list(direct.get("ip_cidr", [])),
+            "dns-hijack": ["any:53", "tcp://any:53"],
+            "route-exclude-address": excludes,
         }
 
     cfg["proxies"] = proxies
