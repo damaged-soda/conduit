@@ -59,5 +59,35 @@ def test_duplicate_sub_409():
     assert c.post("/api/subscriptions", json={"id": "v"}).status_code == 409
 
 
+def test_refresh_fetches_url_and_imports():
+    app = create_app(":memory:", fetcher=lambda url: FIXTURE)  # 注入假 fetcher，不碰真网络
+    c = TestClient(app)
+    c.post("/api/subscriptions", json={"id": "v", "url": "https://example/sub"})
+    r = c.post("/api/subscriptions/v/refresh")
+    assert r.status_code == 200 and r.json()["imported"] == 2
+    sub = c.get("/api/subscriptions").json()[0]
+    assert sub["has_url"] == 1 and "url" not in sub  # url 是 secret，列表不泄露
+
+
+def test_url_scheme_validated():
+    c = _client()
+    assert c.post("/api/subscriptions", json={"id": "v", "url": "file:///etc/passwd"}).status_code == 400
+
+
+def test_refresh_without_url_400():
+    c = _client()
+    c.post("/api/subscriptions", json={"id": "v"})  # 没 url
+    assert c.post("/api/subscriptions/v/refresh").status_code == 400
+
+
+def test_refresh_fetch_failure_502():
+    def boom(url):
+        raise RuntimeError("network down")
+
+    c = TestClient(create_app(":memory:", fetcher=boom))
+    c.post("/api/subscriptions", json={"id": "v", "url": "https://x/sub"})
+    assert c.post("/api/subscriptions/v/refresh").status_code == 502  # 抓取失败 → 502，不回显 url
+
+
 def test_index_page():
     assert _client().get("/").status_code == 200

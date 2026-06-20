@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   id         TEXT PRIMARY KEY,
   type       TEXT NOT NULL DEFAULT 'clash',
   note       TEXT NOT NULL DEFAULT '',
+  url        TEXT,                                  -- 基于链接拉取的订阅 URL（含 token = secret，API 不返回）
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS imports (
@@ -53,10 +54,12 @@ class Store:
         with self._lock:
             self._conn.executescript(_SCHEMA)
 
-    def add_subscription(self, sub_id: str, type: str = "clash", note: str = "") -> None:
+    def add_subscription(self, sub_id: str, type: str = "clash", note: str = "", url: str | None = None) -> None:
         with self._lock:
             try:
-                self._conn.execute("INSERT INTO subscriptions(id, type, note) VALUES (?, ?, ?)", (sub_id, type, note))
+                self._conn.execute(
+                    "INSERT INTO subscriptions(id, type, note, url) VALUES (?, ?, ?, ?)", (sub_id, type, note, url)
+                )
                 self._conn.commit()
             except sqlite3.IntegrityError as e:
                 raise ValueError(f"subscription 已存在: {sub_id}") from e
@@ -67,9 +70,12 @@ class Store:
         return dict(row) if row else None
 
     def list_subscriptions(self) -> list[dict]:
+        """列订阅（**不返回 url**，它含 token = secret；只给 has_url 标志）。"""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT s.*, (SELECT COUNT(*) FROM nodes n WHERE n.sub_id = s.id) AS node_count "
+                "SELECT s.id, s.type, s.note, s.created_at, "
+                "(s.url IS NOT NULL AND s.url != '') AS has_url, "
+                "(SELECT COUNT(*) FROM nodes n WHERE n.sub_id = s.id) AS node_count "
                 "FROM subscriptions s ORDER BY s.created_at"
             ).fetchall()
         return [dict(r) for r in rows]
