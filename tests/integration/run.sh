@@ -2,7 +2,8 @@
 # conduit 集成测试（TESTING.md 第 2 层）：起隔离网络，**结构化**验证路由 + 故障切换。
 # 拓扑保证（见 compose.yaml）：echo-proxied 只经代理可达、echo-direct 只直连可达 ——
 # 所以「访问成功」本身就证明走对了路，不是看返回字符串。
-# ⚠️ 首版断言，尚未在本机实跑验证（mihomo 经 socks5 的远端解析行为待真机确认）；任意 Docker 上 `./run.sh` 跑通后固化。
+# ✅ 已在真实 Docker（MBA, 2026-06-20）实跑全绿；当时发现 mixed-port 默认绑 127.0.0.1
+#    （已在 mihomo.proxy-only.yaml 加 allow-lan 修掉）。later TODO 见末尾。
 set -euo pipefail
 cd "$(dirname "$0")"
 

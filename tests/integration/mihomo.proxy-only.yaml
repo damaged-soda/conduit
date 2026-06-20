@@ -2,6 +2,8 @@
 # 健康检查打本地 echo-health（隔离网无公网，不能用 gstatic）。
 # 临时手写；后续换成 render() 的真实产物。
 mixed-port: 7890
+allow-lan: true          # 不开则混合端口只绑 127.0.0.1，tester 跨容器连不上
+bind-address: "*"
 mode: rule
 log-level: info
 external-controller: 0.0.0.0:9090
