@@ -54,6 +54,7 @@ config/       规则源、标签映射、策略绑定（版本控制）
 templates/    mihomo 配置模板 + per-target overlay 钩子
 examples/     输入文件的 schema 示例（targets / direct-list，占位值）
 secrets/      订阅 URL 等（gitignored）
+tests/        测试：golden 配置不变量 + Docker 集成台（见 TESTING.md）
 ```
 
 ## 待定设计点（按 Codex review 收敛后）

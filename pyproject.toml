@@ -5,6 +5,9 @@ description = "mihomo 配置控制面：订阅 → 可靠 mihomo 配置生成器
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+dev = ["pytest>=8", "pyyaml>=6"]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100
