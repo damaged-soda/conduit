@@ -12,4 +12,5 @@ ENV CONDUIT_DB=/data/conduit.db
 EXPOSE 8000
 
 # 容器内绑 0.0.0.0（隔离 netns）；对外暴露由 compose 的端口映射控制（默认只到宿主 localhost）。
-CMD ["uvicorn", "--factory", "service.app:make_app", "--host", "0.0.0.0", "--port", "8000"]
+# --no-access-log：订阅 token 在 URL query 里，关掉访问日志避免 token 进日志。
+CMD ["uvicorn", "--factory", "service.app:make_app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

@@ -153,6 +153,20 @@ def test_sub_clash_pure_has_proxies_groups_and_creds():
     assert "pass1" in r.text  # 订阅含明文节点凭据（ss password）→ token 保护是对的
 
 
+def test_sub_clash_has_private_tailnet_direct_baseline():
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    token = c.get("/api/sub-token").json()["token"]
+    # 纯净 + full 都应内置 tailnet/私网直连兜底（rule#0 基线），不被"全代理"抓走
+    for full in (0, 1):
+        cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token, "full": full}).text)
+        assert "IP-CIDR,100.64.0.0/10,DIRECT,no-resolve" in cfg["rules"]      # tailscale CGNAT
+        assert "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve" in cfg["rules"]     # 私网
+    full_cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token, "full": 1}).text)
+    assert "100.64.0.0/10" in full_cfg["tun"]["route-exclude-address"]        # full 的 TUN 也排除
+
+
 def test_sub_clash_full_has_dns_and_tun():
     c = _client()
     sid = _mksub(c)

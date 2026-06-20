@@ -115,11 +115,11 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
         return {"token": store.get_sub_token()}
 
     @app.get("/sub/clash")
-    def sub_clash(token: str = "", full: int = 0):
-        # 订阅产物含明文节点凭据 → 必须 token（常量时间比较）。direct-list v1 暂空（→ MATCH,PROXY）。
+    def sub_clash(token: str = "", full: bool = False):
+        # 订阅产物含明文节点凭据 → 必须 token（常量时间比较）。私网/tailnet 直连兜底在 render 内置。
         if not secrets.compare_digest(token, store.get_sub_token()):
             raise HTTPException(403, "bad token")
-        cfg = render_subscription(store.nodes_for_render(), {}, full=bool(full))
+        cfg = render_subscription(store.nodes_for_render(), {}, full=full)
         return Response(cfg, media_type="text/yaml; charset=utf-8")
 
     @app.get("/", response_class=HTMLResponse)
