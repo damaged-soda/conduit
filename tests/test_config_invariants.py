@@ -1,107 +1,238 @@
-"""Golden 配置不变量：断言生成出来的 mihomo 配置满足 CONSTRAINTS。
+"""Golden 配置不变量：断言生成的 mihomo 配置满足 CONSTRAINTS（TESTING.md 第 1 层，零网络）。
 
-现在跑在手写夹具上（fixtures/mihomo.min.yaml），它代表 render() 应当产出的形态；
-等 render() 实现后，把夹具换成 render() 的真实输出即可。
-零网络、最安全的一层（见 TESTING.md 第 1 层）。
+每个不变量是一个返回「违规列表」的函数：good 夹具应当无违规，**坏夹具（mihomo.bad.yaml）必须被抓出违规**——
+后者防「假绿」（检查写错了会让坏配置也过）。render() 实现后，把 good 夹具换成 render() 真实输出即可。
+
+待补（见 Codex 第 2 轮 review）：SUB-RULE 递归校验、fake-ip-filter-mode: rule、domain_wildcard→mihomo 规则映射、
+fallback 健康检查频率预算、mihomo -t 负例语料、controller 绑定/secret 生产不变量。
 """
 
 from __future__ import annotations
 
+import ipaddress
 import pathlib
+import shutil
+import subprocess
 
 import pytest
+import yaml  # 硬依赖：缺 PyYAML 直接失败，不静默跳过（装 `.[dev]`）
 
-yaml = pytest.importorskip("yaml")
+HERE = pathlib.Path(__file__).parent
+GOOD = HERE / "fixtures" / "mihomo.min.yaml"
+BAD = HERE / "fixtures" / "mihomo.bad.yaml"
 
-FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "mihomo.min.yaml"
-
-# 调用方喂入的 direct-list（占位，对应夹具）
+# 调用方喂入的结构化 direct-list（占位，对应 good 夹具），覆盖各类型。
 DIRECT = {
+    "domain_exact": ["host.example-internal"],
     "domain_suffix": ["example-internal"],
-    "ip_cidr": ["10.0.0.0/8"],
+    "ip_cidr": ["10.0.0.0/8", "fd00::/8"],  # IPv4 + IPv6
+    # domain_wildcard 暂缓：→ mihomo 规则映射待 render 设计
 }
 
 TERMINALS = {"DIRECT", "REJECT", "REJECT-DROP", "PASS"}
+LOGICAL = {"AND", "OR", "NOT"}
 
 
-def load(path: pathlib.Path = FIXTURE) -> dict:
+def load(path: pathlib.Path) -> dict:
     return yaml.safe_load(path.read_text())
 
 
-def _rule_parts(cfg: dict) -> list[list[str]]:
-    return [[p.strip() for p in r.split(",")] for r in cfg.get("rules", [])]
+def _norm_cidr(s: str) -> str:
+    try:
+        return str(ipaddress.ip_network(s, strict=False))
+    except ValueError:
+        return s
 
 
-def rule_targets(cfg: dict) -> set[str]:
-    out: set[str] = set()
-    for parts in _rule_parts(cfg):
-        if parts[0] == "MATCH":
-            out.add(parts[1])
-        elif len(parts) >= 3:
-            out.add(parts[2])
+def split_top(s: str) -> list[str]:
+    """按顶层逗号切分（括号内逗号不切）。逻辑规则 AND/OR/NOT、SUB-RULE 的 payload 内含逗号。"""
+    out: list[str] = []
+    depth = 0
+    cur = ""
+    for ch in s:
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            out.append(cur.strip())
+            cur = ""
+        else:
+            cur += ch
+    out.append(cur.strip())
     return out
 
 
-def group_names(cfg: dict) -> set[str]:
-    return {g["name"] for g in cfg.get("proxy-groups", [])}
+def rules(cfg: dict) -> list[list[str]]:
+    return [split_top(r) for r in cfg.get("rules", [])]
+
+
+def rule_outbound(parts: list[str]) -> str | None:
+    """取一条规则的 outbound（group/terminal）。覆盖 MATCH / 逻辑规则 / 普通规则；SUB-RULE 暂不取。"""
+    head = parts[0]
+    if head == "MATCH":
+        return parts[1] if len(parts) > 1 else None
+    if head == "SUB-RULE":
+        return None  # 子规则引用，单独校验（TODO）
+    if head in LOGICAL:
+        return parts[-1] if len(parts) > 1 else None
+    return parts[2] if len(parts) >= 3 else None
 
 
 def proxy_names(cfg: dict) -> set[str]:
     return {p["name"] for p in cfg.get("proxies", [])}
 
 
-def test_direct_list_lands_in_three_places():
-    """每个 direct 目的地必须同时出现在：DIRECT 规则 / fake-ip 放行 / TUN route-exclude。"""
-    cfg = load()
-    violations: list[str] = []
+def group_names(cfg: dict) -> set[str]:
+    return {g["name"] for g in cfg.get("proxy-groups", [])}
 
-    # ① DIRECT 规则
-    suffix_direct = {p[1] for p in _rule_parts(cfg) if p[0] == "DOMAIN-SUFFIX" and p[2:3] == ["DIRECT"]}
-    cidr_direct = {p[1] for p in _rule_parts(cfg) if p[0] == "IP-CIDR" and p[2:3] == ["DIRECT"]}
-    for d in DIRECT["domain_suffix"]:
-        if d not in suffix_direct:
-            violations.append(f"domain_suffix {d} 缺 DIRECT 规则")
-    for c in DIRECT["ip_cidr"]:
-        if c not in cidr_direct:
-            violations.append(f"ip_cidr {c} 缺 DIRECT 规则")
 
-    # ② fake-ip 放行（用 fake-ip 时）
+def _domain_covered(domain: str, patterns: list[str]) -> bool:
+    """domain 是否被 fake-ip-filter 某模式覆盖（精确 / `+.x` / `*.x`）。"""
+    for p in patterns:
+        if p == domain:
+            return True
+        if p.startswith("+.") and (domain == p[2:] or domain.endswith("." + p[2:])):
+            return True
+        if p.startswith("*.") and domain.endswith("." + p[2:]):
+            return True
+    return False
+
+
+# ---- 不变量：返回违规列表（空 = 通过）----
+
+def check_direct_first_and_match(cfg: dict, direct: dict) -> list[str]:
+    """direct-list 的 DIRECT 规则必须在规则表最前；最后必须有 MATCH 兜底。"""
+    rp = rules(cfg)
+    if not rp:
+        return ["规则为空"]
+    v: list[str] = []
+    if rp[-1][0] != "MATCH":
+        v.append("最后一条规则不是 MATCH（缺兜底）")
+
+    want = (
+        set(direct.get("domain_exact", []))
+        | set(direct.get("domain_suffix", []))
+        | {_norm_cidr(c) for c in direct.get("ip_cidr", [])}
+    )
+    direct_idx = []
+    for i, parts in enumerate(rp):
+        if rule_outbound(parts) == "DIRECT" and len(parts) >= 2:
+            payload = _norm_cidr(parts[1]) if parts[0].startswith("IP-CIDR") else parts[1]
+            if payload in want:
+                direct_idx.append(i)
+    if not direct_idx:
+        return v + ["没找到任何 direct-list 的 DIRECT 规则"]
+    non_direct = [i for i in range(len(rp)) if i not in direct_idx]
+    if non_direct and max(direct_idx) > min(non_direct):
+        v.append(
+            f"direct-list 规则不在最前：有非直连规则排在它们之前"
+            f"（首个非直连@{min(non_direct)}，末个直连@{max(direct_idx)}）"
+        )
+    return v
+
+
+def check_three_places(cfg: dict, direct: dict) -> list[str]:
+    """每个 direct 目的地必须同时：① DIRECT 规则 ② fake-ip 放行（开 fake-ip 时）③ TUN route-exclude（开 auto-route 时）。"""
+    v: list[str] = []
+    rp = rules(cfg)
+    domains = list(direct.get("domain_exact", [])) + list(direct.get("domain_suffix", []))
+
+    # ①
+    direct_domain = {p[1] for p in rp if p[0] in ("DOMAIN", "DOMAIN-SUFFIX") and rule_outbound(p) == "DIRECT"}
+    direct_cidr = {_norm_cidr(p[1]) for p in rp if p[0] in ("IP-CIDR", "IP-CIDR6") and rule_outbound(p) == "DIRECT"}
+    for d in domains:
+        if d not in direct_domain:
+            v.append(f"域名 {d} 缺 DIRECT 规则")
+    for c in direct.get("ip_cidr", []):
+        if _norm_cidr(c) not in direct_cidr:
+            v.append(f"CIDR {c} 缺 DIRECT 规则")
+
+    # ②
     dns = cfg.get("dns", {})
     if dns.get("enhanced-mode") == "fake-ip":
-        joined = " ".join(dns.get("fake-ip-filter", []))
-        for d in DIRECT["domain_suffix"]:
-            if d not in joined:
-                violations.append(f"domain_suffix {d} 不在 fake-ip-filter")
+        filt = dns.get("fake-ip-filter", [])
+        for d in domains:
+            if not _domain_covered(d, filt):
+                v.append(f"域名 {d} 不在 fake-ip-filter（会被解析成假 IP）")
 
-    # ③ TUN 路由排除（开 TUN 时）
+    # ③
     tun = cfg.get("tun", {})
     if tun.get("enable"):
-        excl = set(tun.get("route-exclude-address", []))
-        for c in DIRECT["ip_cidr"]:
-            if c not in excl:
-                violations.append(f"ip_cidr {c} 不在 tun.route-exclude-address")
+        if not tun.get("auto-route"):
+            v.append("TUN 开了但 auto-route 未开：route-exclude 语义不明，直连 CIDR 可能仍被劫持")
+        else:
+            excl = {_norm_cidr(c) for c in tun.get("route-exclude-address", [])}
+            for c in direct.get("ip_cidr", []):
+                if _norm_cidr(c) not in excl:
+                    v.append(f"CIDR {c} 不在 tun.route-exclude-address")
+    return v
 
-    assert not violations, "direct-list 三处覆盖不一致:\n" + "\n".join(violations)
 
-
-def test_rules_only_target_groups_or_terminals():
+def check_rule_targets(cfg: dict) -> list[str]:
     """关键隔离不变量：规则只引用 group 名或终端动作，绝不直接指向具体节点。"""
-    cfg = load()
     allowed = group_names(cfg) | TERMINALS
-    bad = rule_targets(cfg) - allowed
-    leaked = bad & proxy_names(cfg)
-    assert not leaked, f"规则直接指向了具体节点（应只引用 group）：{leaked}"
-    assert not bad, f"规则指向了未定义的 group/terminal：{bad}"
+    nodes = proxy_names(cfg)
+    v: list[str] = []
+    for parts in rules(cfg):
+        if parts[0] == "SUB-RULE":
+            continue  # TODO: 递归校验子规则
+        t = rule_outbound(parts)
+        if t is None:
+            continue
+        if t in nodes and t not in allowed:
+            v.append(f"规则直接指向具体节点 {t}（应只引用 group）")
+        elif t not in allowed:
+            v.append(f"规则指向未定义的 group/terminal：{t}")
+    return v
 
 
-def test_groups_reference_defined_members():
-    """proxy-group 的成员必须都已定义（无悬空引用）。"""
-    cfg = load()
+def check_group_members(cfg: dict) -> list[str]:
     names = proxy_names(cfg) | group_names(cfg)
-    dangling = [
+    return [
         f"{g['name']} -> {m}"
         for g in cfg.get("proxy-groups", [])
         for m in g.get("proxies", [])
         if m not in names
     ]
-    assert not dangling, f"group 引用了不存在的成员：{dangling}"
+
+
+def check_unique_names(cfg: dict) -> list[str]:
+    names = [p["name"] for p in cfg.get("proxies", [])] + [g["name"] for g in cfg.get("proxy-groups", [])]
+    v: list[str] = []
+    dups = {n for n in names if names.count(n) > 1}
+    if dups:
+        v.append(f"重名 proxy/group：{dups}")
+    clash = {n for n in names if n in TERMINALS}
+    if clash:
+        v.append(f"proxy/group 名与内置 outbound 冲突：{clash}")
+    return v
+
+
+def all_violations(cfg: dict) -> dict[str, list[str]]:
+    return {
+        "direct_first": check_direct_first_and_match(cfg, DIRECT),
+        "three_places": check_three_places(cfg, DIRECT),
+        "rule_targets": check_rule_targets(cfg),
+        "group_members": check_group_members(cfg),
+        "unique_names": check_unique_names(cfg),
+    }
+
+
+# ---- 测试 ----
+
+def test_good_fixture_is_clean():
+    flat = [f"[{k}] {m}" for k, ms in all_violations(load(GOOD)).items() for m in ms]
+    assert not flat, "good 夹具有违规:\n" + "\n".join(flat)
+
+
+def test_bad_fixture_is_caught():
+    """坏配置必须被至少一个不变量抓到，否则说明检查无效（假绿）。"""
+    flat = [m for ms in all_violations(load(BAD)).values() for m in ms]
+    assert flat, "坏夹具竟然没被任何不变量抓到——检查形同虚设"
+
+
+@pytest.mark.skipif(shutil.which("mihomo") is None, reason="mihomo 未安装")
+def test_good_fixture_passes_mihomo_check():
+    r = subprocess.run(["mihomo", "-t", "-f", str(GOOD)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr

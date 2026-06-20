@@ -1,6 +1,7 @@
-# conduit 集成测试台（TESTING.md 第 2 层）：Linux 隔离网络里跑 mihomo + 可 kill 的 mock 上游，
-# 经代理端口 / API 验证路由与故障切换。先不开 TUN。
+# conduit 集成测试台（TESTING.md 第 2 层）：**无外网**的隔离 Linux 网络里跑 mihomo + 可 kill 的
+# mock 上游，经代理端口 / API 验证路由与故障切换。先不开 TUN。
 # ⚠️ Docker on Mac 是 Linux VM —— 这层验的是 Linux/rig 路径；macOS 原生 TUN 上 MBA 实机（第 3 层）。
+# TODO: 镜像固定 tag/digest 保证可复现（现用 latest）。
 name: conduit-test
 
 services:
@@ -22,21 +23,26 @@ services:
     command: ["-L", "socks5://:1080"]
     networks: [tnet]
 
-  echo-proxied:                 # 标记走了哪条路的目标
+  echo-health:                  # 本地健康检查目标（隔离网无公网，不能用 gstatic）
+    image: hashicorp/http-echo:latest
+    command: ["-text=ok", "-listen=:5678"]
+    networks: [tnet]
+  echo-proxied:                 # 标记走了代理的目标
     image: hashicorp/http-echo:latest
     command: ["-text=proxied", "-listen=:5678"]
     networks: [tnet]
-  echo-direct:
+  echo-direct:                  # 标记走了直连的目标
     image: hashicorp/http-echo:latest
     command: ["-text=direct", "-listen=:5678"]
     networks: [tnet]
 
   tester:                       # 测试驱动（见 run.sh）
     image: curlimages/curl:latest
-    depends_on: [mihomo, upstream-a, upstream-b, echo-proxied, echo-direct]
+    depends_on: [mihomo, upstream-a, upstream-b, echo-health, echo-proxied, echo-direct]
     entrypoint: ["sleep", "infinity"]
     networks: [tnet]
 
 networks:
   tnet:
     driver: bridge
+    internal: true              # 真隔离：容器间能通，但无外网出口

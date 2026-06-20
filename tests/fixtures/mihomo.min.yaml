@@ -1,6 +1,6 @@
-# 测试夹具：一份「正确的」最小 mihomo 配置，给 golden 不变量测试用。
-# 代表 render() 对一个「开 TUN + fake-ip」的 target 应当产出的形态。
-# 不是真要连的配置，上游 server 是占位。
+# Golden 夹具：一份「正确的」最小 mihomo 配置，给不变量测试用。
+# 代表 render() 对一个「开 TUN + fake-ip」的 target 应当产出的形态（不是真要连的配置）。
+# direct-list 覆盖 域名精确 / 域名后缀 / IPv4 CIDR / IPv6 CIDR，且都落到三处。
 mixed-port: 7890
 mode: rule
 
@@ -8,16 +8,23 @@ dns:
   enable: true
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16
-  fake-ip-filter:
-    - "+.example-internal"        # direct 域名必须在此放行，否则被解析成假 IP
+  fake-ip-filter:                  # direct 域名必须在此放行，否则被解析成假 IP
+    - host.example-internal
+    - "+.example-internal"
   nameserver:
     - https://1.1.1.1/dns-query
 
 tun:
   enable: true
   stack: system
-  route-exclude-address:
-    - 10.0.0.0/8                  # direct CIDR 必须从 TUN 路由排除
+  auto-route: true                 # route-exclude 仅在 auto-route 下有意义
+  auto-detect-interface: true
+  strict-route: true
+  dns-hijack:
+    - "any:53"
+  route-exclude-address:           # direct CIDR 必须从 TUN 路由排除
+    - 10.0.0.0/8
+    - fd00::/8
 
 proxies:
   - { name: up-a, type: socks5, server: placeholder-a, port: 1080 }
@@ -31,10 +38,13 @@ proxy-groups:
     interval: 60
     timeout: 2000
     lazy: false
+    expected-status: "204"
 
 rules:
-  # direct-list：必须最高优先级直连（放在最前）
+  # direct-list：必须最高优先级直连（放在最前），覆盖各类型
+  - DOMAIN,host.example-internal,DIRECT
   - DOMAIN-SUFFIX,example-internal,DIRECT
   - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
-  # 其余走代理
+  - IP-CIDR6,fd00::/8,DIRECT,no-resolve
+  # 兜底
   - MATCH,PROXY

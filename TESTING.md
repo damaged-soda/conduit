@@ -33,3 +33,13 @@
 - 纯代理端口测路由 / failover：简单，先做这个。
 - 测 TUN：容器要 `cap_add: [NET_ADMIN]` + `/dev/net/tun`。
 - 忠实测私有网旁路：在同 netns 里把那张私有网（如 tailscale）也跑起来，再断言其流量走直连。晚点需要再上。
+
+## 已知待补（按 Codex 第 2 轮 review）
+- **规则解析**：当前已做括号感知切分；SUB-RULE 的递归校验仍 TODO。
+- **fake-ip**：`fake-ip-filter-mode: rule`、私有域名的 `nameserver-policy` / `direct-nameserver` 需求未纳入断言。
+- **direct-list**：`domain_wildcard` → mihomo 规则类型映射待 render 设计（mihomo 无 `DOMAIN-WILDCARD` 规则）。
+- **可用性**：fallback 健康检查频率预算（节点多时别打爆带宽）；group health-check 不覆盖 `use:` provider —— 数据面 fallback 要么不用 `use:`、要么 provider 另配 health-check。
+- **集成断言**：量化切换耗时、用 `/proxies` 确认选中节点、长连接确认 chain；镜像固定版本。
+- **break-glass**：要拆成 域名 / 固定 IP / 解析 DNS / 控制面入口，并在 MBA 冒烟里实测 rollback timer 不依赖 mihomo 本身。
+- **生产不变量**：controller 绑定（生产须 loopback / 受控）+ secret 必须存在。
+- `mihomo -t -f` 已接入 golden（装了 mihomo 才跑）；后续补坏配置负例语料。
