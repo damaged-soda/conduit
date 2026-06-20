@@ -1,0 +1,14 @@
+# 调用方提供的目标主机清单 + per-target overlay（mihomo 数据面差异）。
+# conduit 用占位名，不认识具体主机；真值由调用方（如 fleet）按此 schema 填，
+# 住在调用方那边或某个约定路径——conduit 只认 schema，不认来源。
+#
+# 只放渲染需要的字段。「怎么送达 / 谁推谁拉」不在 conduit 职责内，别写这里。
+targets:
+  - name: host-a
+    tun: true
+    listen: "127.0.0.1:7890"
+    controller: "127.0.0.1:9090"   # mihomo external-controller bind
+  - name: host-b
+    tun: false
+    listen: "0.0.0.0:7890"
+    controller: "127.0.0.1:9090"

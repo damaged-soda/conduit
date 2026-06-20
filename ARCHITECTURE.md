@@ -3,12 +3,14 @@
 约束见 [CONSTRAINTS.md](CONSTRAINTS.md)。这里写实现路径，会随迭代变。
 
 ## 边界：conduit 的输入
-conduit 是个生成器，下面这些由**调用方喂入**，conduit 不硬编码：
+conduit 通过**读外部文件**接收调用方的现状（不硬编码、不反向依赖来源）。约定输入：
 
-- **subscriptions**：订阅来源（secret）。
-- **targets**：目标主机清单 + 每台的 overlay（TUN / 监听 / 接口 / controller bind / 推或拉…）。用占位名，conduit 不认识具体主机。
-- **direct-list**：必须直连的目的地（见 CONSTRAINTS）。
-- **rules / tags / policies**：自维护的规则、标签映射、策略绑定（版本控制，conduit 仓内）。
+- **subscriptions**：订阅来源（secret，放 `secrets/`）。
+- **targets 文件**：目标主机清单 + 每台的渲染相关 overlay（TUN / 监听 / controller bind…）。用占位名，conduit 不认识具体主机；schema 见 `examples/targets.example.yaml`。送达 / 谁推谁拉不写这里，那不是 conduit 的事。
+- **direct-list 文件**：必须直连的目的地；schema 见 `examples/direct-list.example.yaml`。
+- **rules / tags / policies**：自维护的规则、标签映射、策略绑定（版本控制，放 conduit `config/`）。
+
+真值由调用方（如 fleet）按 schema 填，住在调用方那边或某个约定路径；conduit 只认 schema，不认来源。
 
 ## 生成流水线（控制面）
 
@@ -42,12 +44,11 @@ mihomo health-check → 指标存储 → 生成器读「过去 N 时长不健康
 conduit/      生成器（Python 包，先放接口骨架）
 config/       规则源、标签映射、策略绑定（版本控制）
 templates/    mihomo 配置模板 + per-target overlay 钩子
-hosts/        per-target overlay 的示例/占位（真值由调用方喂入）
+examples/     输入文件的 schema 示例（targets / direct-list，占位值）
 secrets/      订阅 URL 等（gitignored）
 ```
 
 ## 待定设计点
-- 调用方 → conduit 的**输入接口**长什么样（文件约定 / CLI 参数 / 读外部源）。
 - 「长期不健康」的具体**阈值与时间窗**。
 - 指纹是否够稳（CDN 域名 / SNI 落地、同节点多端口等边界）。
 - 健康指标的**采集与存储形态**（自写 vs 现成），属部署侧。
