@@ -120,7 +120,16 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
         if not secrets.compare_digest(token, store.get_sub_token()):
             raise HTTPException(403, "bad token")
         cfg = render_subscription(store.nodes_for_render(), {}, full=full)
-        return Response(cfg, media_type="text/yaml; charset=utf-8")
+        # 标准订阅响应头：让 clash-verge/mihomo 当订阅文件处理（否则浏览器直接显示、客户端导入失败）。
+        return Response(
+            cfg,
+            media_type="text/yaml; charset=utf-8",
+            headers={
+                "content-disposition": 'attachment; filename="conduit.yaml"',
+                "profile-update-interval": "24",  # 小时
+                "access-control-allow-origin": "*",  # 防客户端在 webview 里 fetch 被 CORS 拦
+            },
+        )
 
     @app.get("/", response_class=HTMLResponse)
     def index():

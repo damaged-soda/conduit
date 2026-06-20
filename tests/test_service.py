@@ -153,6 +153,16 @@ def test_sub_clash_pure_has_proxies_groups_and_creds():
     assert "pass1" in r.text  # 订阅含明文节点凭据（ss password）→ token 保护是对的
 
 
+def test_sub_clash_has_subscription_headers():
+    """clash-verge/mihomo 靠这些头把响应当订阅文件处理（否则导入失败/浏览器直接显示）。"""
+    c = _client()
+    token = c.get("/api/sub-token").json()["token"]
+    r = c.get("/sub/clash", params={"token": token})
+    assert "attachment" in r.headers.get("content-disposition", "")
+    assert r.headers.get("access-control-allow-origin") == "*"
+    assert r.headers.get("profile-update-interval")
+
+
 def test_sub_clash_has_private_tailnet_direct_baseline():
     c = _client()
     sid = _mksub(c)
