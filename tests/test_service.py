@@ -9,6 +9,7 @@ import pathlib
 import sys
 
 import pytest
+import yaml
 
 HERE = pathlib.Path(__file__).parent
 sys.path.insert(0, str(HERE.parent))  # repo root：conduit + service 包
@@ -129,6 +130,57 @@ def test_migration_adds_name_and_url_to_old_db(tmp_path):
     conn.close()
     sub = Store(str(p)).get_subscription("westdata")  # 迁移补 name(=id) + url
     assert sub["name"] == "westdata" and "url" in sub
+
+
+def test_sub_clash_requires_token():
+    c = _client()
+    assert c.get("/sub/clash").status_code == 403
+    assert c.get("/sub/clash", params={"token": "wrong"}).status_code == 403
+
+
+def test_sub_clash_pure_has_proxies_groups_and_creds():
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    token = c.get("/api/sub-token").json()["token"]
+    r = c.get("/sub/clash", params={"token": token})
+    assert r.status_code == 200
+    cfg = yaml.safe_load(r.text)
+    assert len(cfg["proxies"]) == 2
+    assert cfg["proxy-groups"][0]["name"] == "PROXY"
+    assert cfg["rules"][-1] == "MATCH,PROXY"
+    assert "tun" not in cfg and "dns" not in cfg  # 纯净版不带实例设置
+    assert "pass1" in r.text  # 订阅含明文节点凭据（ss password）→ token 保护是对的
+
+
+def test_sub_clash_has_private_tailnet_direct_baseline():
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    token = c.get("/api/sub-token").json()["token"]
+    # 纯净 + full 都应内置 tailnet/私网直连兜底（rule#0 基线），不被"全代理"抓走
+    for full in (0, 1):
+        cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token, "full": full}).text)
+        assert "IP-CIDR,100.64.0.0/10,DIRECT,no-resolve" in cfg["rules"]      # tailscale CGNAT
+        assert "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve" in cfg["rules"]     # 私网
+    full_cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token, "full": 1}).text)
+    assert "100.64.0.0/10" in full_cfg["tun"]["route-exclude-address"]        # full 的 TUN 也排除
+
+
+def test_sub_clash_full_has_dns_and_tun():
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    token = c.get("/api/sub-token").json()["token"]
+    cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token, "full": 1}).text)
+    assert cfg["dns"]["enhanced-mode"] == "fake-ip" and cfg["tun"]["enable"] is True
+
+
+def test_sub_clash_empty_is_valid_all_direct():
+    c = _client()
+    token = c.get("/api/sub-token").json()["token"]
+    cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
+    assert cfg["rules"] == ["MATCH,DIRECT"]  # 无节点 → 合法的全直连配置
 
 
 def test_index_page():

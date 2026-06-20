@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# conduit 集成测试（TESTING.md 第 2 层）：起隔离网络，**结构化**验证路由 + 故障切换。
-# 拓扑保证（见 compose.yaml）：echo-proxied 只经代理可达、echo-direct 只直连可达 ——
-# 所以「访问成功」本身就证明走对了路，不是看返回字符串。
-# ✅ 已在真实 Docker（MBA, 2026-06-20）实跑全绿；当时发现 mixed-port 默认绑 127.0.0.1
-#    （已在 mihomo.proxy-only.yaml 加 allow-lan 修掉）。later TODO 见末尾。
+# conduit 集成测试：用 render 真实产出跑 mihomo，断言路由语义（本地 + GitHub PR CI 都跑）。
+#   私网 IP → 直连(rule#0 兜底)  /  域名 → 代理  /  kill upstream → 切换
+# 需要：docker + docker compose；python3 + 能 import conduit（CI 里先 `pip install -e .`）。
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -11,33 +9,39 @@ compose() { docker compose "$@"; }
 texec() { compose exec -T tester "$@"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+echo "== 用 render 产出生成配置 =="
+"${PYTHON:-python3}" gen_config.py || fail "gen_config 失败"
+
 compose up -d
 trap 'compose down -v' EXIT
 
 echo "== 等 mihomo 就绪 =="
 for i in $(seq 1 30); do
   texec curl -sf http://mihomo:9090/version >/dev/null 2>&1 && break
-  [ "$i" -eq 30 ] && fail "mihomo external-controller 30s 内未就绪"
+  [ "$i" -eq 30 ] && fail "mihomo 30s 内未就绪"
   sleep 1
 done
 
-echo "== 路由：echo-proxied 只能经代理到达 → 成功即证明走了代理 =="
+echo "== 域名目标 → 应走 PROXY（echo-proxied 只在 backnet，mihomo 必须经 upstream）=="
 out=$(texec curl -s --max-time 8 -x http://mihomo:7890 http://echo-proxied:5678) \
-  || fail "经代理访问 echo-proxied 失败（代理路径不通，或被错误直连而无路由）"
+  || fail "经代理访问 echo-proxied 失败（代理路径不通）"
 echo "$out" | grep -q proxied || fail "echo-proxied 返回异常：$out"
 
-echo "== 路由：echo-direct 只能直连到达 → 成功即证明走了直连 =="
-out=$(texec curl -s --max-time 8 -x http://mihomo:7890 http://echo-direct:5678) \
-  || fail "经 mihomo 访问 echo-direct 失败（直连规则没生效被错误代理，或直连路径不通）"
-echo "$out" | grep -q direct || fail "echo-direct 返回异常：$out"
+echo "== 私网 IP 目标 → 应走 DIRECT（172.28.0.5 只在 directnet，upstream 够不到）=="
+out=$(texec curl -s --max-time 8 -x http://mihomo:7890 http://172.28.0.5:5678) \
+  || fail "私网目标未走直连 —— render 的私网兜底直连缺失（rule#0 回归）"
+echo "$out" | grep -q direct || fail "私网目标返回异常：$out"
 
-echo "== 故障切换：kill 当前上游后新连接应仍通 =="
-texec curl -s http://mihomo:9090/proxies/PROXY >/dev/null 2>&1 || true   # 诊断用
-compose stop upstream-a >/dev/null
-sleep 12   # > health-check interval(10s)，让 mihomo 把 up-a 标记不健康
+echo "== 故障切换：kill 当前选中的 upstream，断言选中真的切换 + 仍通 =="
+sel() { texec curl -s http://mihomo:9090/proxies/PROXY | "${PYTHON:-python3}" -c "import sys,json;print(json.load(sys.stdin)['now'])"; }
+now=$(sel); echo "切换前选中：$now"
+compose stop "$now" >/dev/null
+sleep 12   # > health-check interval(10s)，让 mihomo 标记其不健康
+now2=$(sel)
+[ "$now2" != "$now" ] || fail "故障切换未发生：选中节点仍是 $now"
 out=$(texec curl -s --max-time 8 -x http://mihomo:7890 http://echo-proxied:5678) \
-  || fail "kill 一个上游后经代理访问失败（故障切换未生效）"
-echo "$out" | grep -q proxied || fail "切换后 echo-proxied 返回异常：$out"
+  || fail "切换后经代理访问失败"
+echo "$out" | grep -q proxied || fail "切换后返回异常：$out"
+echo "切换：$now → $now2"
 
-echo "PASS: 路由（代理/直连各自结构化证明）+ 故障切换基础断言通过"
-# TODO: 用 /proxies/PROXY 断言 selected 确实从 up-a 切到 up-b 并量化耗时；长连接确认 chain=DIRECT。
+echo "PASS: 域名→代理、私网→直连(rule#0 兜底)、故障切换 全过"

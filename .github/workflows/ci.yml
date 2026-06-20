@@ -1,0 +1,28 @@
+# PR 检查：单元/golden（pytest）+ 集成（Docker，跑 render 真实产出并断言路由语义）。
+# 两个 job 都 gate PR。runner 自带 docker+compose；代理模式不需 privileged。
+name: ci
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[dev,service]'
+      - run: pytest -q
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .          # gen_config 要 import conduit + pyyaml
+      - run: bash tests/integration/run.sh

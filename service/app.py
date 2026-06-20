@@ -10,14 +10,16 @@ TODO：tag、render+pull、定时刷新、认证、secret 加密。
 from __future__ import annotations
 
 import os
+import secrets
 from typing import Callable
 
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from conduit.ingest import normalize
+from conduit.render import render_subscription
 
 from .db import Store
 from .fetch import fetch_url
@@ -108,6 +110,18 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
     def list_nodes():
         return store.list_nodes()
 
+    @app.get("/api/sub-token")
+    def sub_token():
+        return {"token": store.get_sub_token()}
+
+    @app.get("/sub/clash")
+    def sub_clash(token: str = "", full: bool = False):
+        # 订阅产物含明文节点凭据 → 必须 token（常量时间比较）。私网/tailnet 直连兜底在 render 内置。
+        if not secrets.compare_digest(token, store.get_sub_token()):
+            raise HTTPException(403, "bad token")
+        cfg = render_subscription(store.nodes_for_render(), {}, full=full)
+        return Response(cfg, media_type="text/yaml; charset=utf-8")
+
     @app.get("/", response_class=HTMLResponse)
     def index():
         return _PAGE
@@ -133,6 +147,7 @@ textarea{width:100%;height:110px;box-sizing:border-box}
 </style></head>
 <body>
 <h1>conduit</h1>
+<div id="sub" class="muted" style="margin-bottom:1rem"></div>
 <div class="wrap">
   <div class="left">
     <button onclick="newSub()">＋ 新建订阅</button>
@@ -206,7 +221,14 @@ async function renderDetail(){
 
 async function patch(body){await j(`/api/subscriptions/${SEL}`,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify(body)});await loadSubs();await renderDetail();}
 
-loadSubs();
+async function loadSub(){
+  const r=await j('/api/sub-token');
+  const base=location.origin+'/sub/clash?token='+encodeURIComponent(r.token);
+  document.getElementById('sub').replaceChildren(
+    el('div','clash 订阅（导入 clash-verge / mihomo）：'), el('code',base),
+    el('div','带 DNS/TUN：'), el('code',base+'&full=1'));
+}
+loadSubs(); loadSub();
 </script>
 </body></html>
 """
