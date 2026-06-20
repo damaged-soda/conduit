@@ -4,6 +4,9 @@ name: conduit-service
 
 services:
   conduit:
+    # rig 用预构建公开镜像（`docker compose pull` 零认证拉，不在 rig 上 build）。
+    image: ghcr.io/damaged-soda/conduit:latest
+    # 本地开发可 `up -d --build` 现构建（会以上面的 image 名打 tag）。
     build:
       context: ..
       dockerfile: deploy/Dockerfile
