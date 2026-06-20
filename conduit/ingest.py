@@ -27,8 +27,11 @@ class IngestResult:
 
 
 def parse_clash(raw: str | bytes) -> list | None:
-    """取 proxies 列表。None = 不是合法 clash 文档；[] = 是文档但没有 proxies。"""
-    data = yaml.safe_load(raw)
+    """取 proxies 列表。None = 不是合法 clash 文档（含 YAML 语法坏）；[] = 是文档但没有 proxies。"""
+    try:
+        data = yaml.safe_load(raw)
+    except yaml.YAMLError:
+        return None  # 语法坏的导入内容 → 当作非法文档，计入诊断，不炸
     if not isinstance(data, dict):
         return None
     proxies = data.get("proxies")

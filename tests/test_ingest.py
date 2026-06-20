@@ -96,6 +96,11 @@ def test_missing_or_invalid_doc_reported():
     assert ingest("- just\n- a\n- list\n").skipped[0]["reason"] == "不是合法的 clash YAML 文档"
 
 
+def test_malformed_yaml_reported_not_raised():
+    res = ingest("proxies: 'unterminated\n  - {oops")  # YAML 语法坏
+    assert res.nodes == [] and res.skipped[0]["reason"] == "不是合法的 clash YAML 文档"
+
+
 def test_vmess_ws_params_preserved():
     raw = (
         "proxies:\n"
