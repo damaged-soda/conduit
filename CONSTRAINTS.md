@@ -12,21 +12,23 @@
 ## 两平面分工
 - **控制面**（conduit 生成器，慢循环，分钟/小时级）管「成员资格」：哪些节点存在、贴什么标签、长期坏的剔除。
 - **数据面**（每台本地 mihomo，快循环，秒级）管「实时存活」：health-check + fallback。
-- 推论：节点由生成器 **inline** 进配置，不用 mihomo 原生 proxy-providers 自动抓订阅；新鲜度靠生成器定时跑。
+- 推论：**conduit 自己负责 fetch / 标签 / 剔除，不让 mihomo 直接抓不可信的原始订阅**。输出形态二选一（见 ARCHITECTURE）：写成 top-level `proxies`，或生成 `file`/`inline` provider；新鲜度靠生成器定时跑。
 
 ## 标签隔离
-- 一个标签 = 一个 proxy-group。**规则只引用 group 名**，永不引用订阅名或具体节点。
-- 节点身份用指纹 `(type, server, port)`；订阅改名 / 换订阅后，人工标签仍跟随节点。
+- **proxy-group = 一个标签表达式**（可跨维度组合，如 `trusted ∩ hk ∩ streaming`）；**规则只引用 group 名**，永不引用订阅名或具体节点。render 时把表达式展开成显式成员。
+- 节点身份**分两层**：`endpoint_id = (type, 规范化 server, port)` 做粗物理聚合；`access_id = HMAC(规范化连接参数)`（sni / network / ws-path / grpc-service / cipher / uuid|password 哈希等）做稳定身份，**人工标签挂在 `access_id` 上**，订阅改名 / 换订阅后仍跟随。边界（同机多协议、CDN 落地变化等）用人工 alias / merge / split 表处理。（精确参数集与表格式见后续身份模型设计轮。）
 - 标签维度正交：`region` / `rate` 自动（正则），`trust` / `purpose` 等人工。
 - 没见过指纹的新节点先进**隔离区**（低信任 group），人工打标后转正；不阻塞自动化。
 
 ## 直连列表（generic bypass）
-- 调用方提供一组「必须直连」的目的地（CIDR / 域名 / IP）。conduit 保证它们 **DIRECT 且最高优先级**。
-- conduit **不关心里面是什么、为什么**（可能是某个私有 mesh 的地址段，也可能是任何内网）。
-- 这组目的地必须不被破坏：TUN 不得错误捕获它们，fake-ip 必须放行其中的域名。
+- 调用方提供一组「必须直连」的目的地（结构化：`domain_exact` / `domain_suffix` / `domain_wildcard` / `ip_cidr`）。conduit **不关心里面是什么、为什么**。
+- 「必须直连」在 mihomo 里要**同时落到三处**，缺一不可：① 最高优先级 DIRECT 规则；② fake-ip 放行（进 `fake-ip-filter` / real-ip）；③ TUN 路由排除（`route-exclude-address`）。私有域名可能还需 `nameserver-policy` 指向直连 DNS。
+- validate 阶段必须检查这三处覆盖一致。
 
 ## 可用性目标
-- 任一节点故障，对人「无感」（**不是字面 < 1s**）：靠调低 health-check interval + fallback，让新连接秒级绕开死节点。已建立的连接由应用层重试，不强求无缝。
+- SLO 写清楚，别含糊：**新连接在节点被探测判定不健康后数秒内绕开**；**已建立的连接不迁移，由应用层重试**（mihomo 不会把在途连接搬到别的节点）。不承诺字面 < 1s、不承诺无感。
+- 落地参数：`fallback` 组 + `health-check` 的 `interval` / `timeout` / `lazy: false` / `expected-status` / `max-failed-times` 调到位；并定义**整组全挂时**的兜底行为。
+- ⚠️ mihomo 的 group health-check **只检查直接写在 `proxies:` 的节点，不检查通过 `use: [provider]` 引入的 provider 节点** —— 这条决定上面「输出形态」的选择（见 ARCHITECTURE）。
 - 长期不健康的节点从生成配置里**剔除**（依据见 ARCHITECTURE 健康回路）。
 
 ## 工程约束
