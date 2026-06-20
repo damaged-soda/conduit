@@ -8,7 +8,7 @@
 ```
 docker compose -f deploy/compose.yaml up -d --build
 ```
-DB 落在命名卷 `conduit-data`（含凭据，留 rig 磁盘）。默认只绑宿主 `127.0.0.1:8000`；要在 tailnet 上访问，改 compose 的端口绑定为 rig 私有网 IP + ACL，或用 `tailscale serve`。**别绑 0.0.0.0**（暂无认证）。
+DB 落在命名卷 `conduit-data`（含凭据，留 rig 磁盘）。默认只绑宿主 `127.0.0.1:8000`。要在 tailnet 上访问：`CONDUIT_BIND=<rig 私有网 IP> docker compose -f deploy/compose.yaml up -d --build`（之后 `rig:8000` 可达），或更稳用 `tailscale serve`。**别绑 0.0.0.0**（暂无认证）。
 
 **本地裸跑（开发）**：
 ```

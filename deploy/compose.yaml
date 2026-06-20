@@ -13,9 +13,9 @@ services:
       - conduit-data:/data            # DB 持久化（含明文凭据，留在 rig 磁盘，别外泄）
     ports:
       # 默认只绑宿主 localhost（安全，无认证别裸暴露）。
-      # 要在私有网（如 tailnet）访问：把它改成 "<rig 私有网 IP>:8000:8000" + 网络 ACL，
-      # 或在宿主用 `tailscale serve` 把 127.0.0.1:8000 暴露给 tailnet。别绑 0.0.0.0。
-      - "127.0.0.1:8000:8000"
+      # 要在私有网（如 tailnet）访问：`CONDUIT_BIND=<rig 私有网 IP> docker compose ... up`，
+      # 或更稳：宿主用 `tailscale serve` 把 127.0.0.1:8000 暴露给 tailnet（带 TLS + 身份）。别绑 0.0.0.0。
+      - "${CONDUIT_BIND:-127.0.0.1}:${CONDUIT_PORT:-8000}:8000"
     restart: unless-stopped
 
 volumes:
