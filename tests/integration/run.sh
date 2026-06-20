@@ -32,11 +32,16 @@ out=$(texec curl -s --max-time 8 -x http://mihomo:7890 http://172.28.0.5:5678) \
   || fail "私网目标未走直连 —— render 的私网兜底直连缺失（rule#0 回归）"
 echo "$out" | grep -q direct || fail "私网目标返回异常：$out"
 
-echo "== 故障切换：kill upstream-a 后域名目标仍通 =="
-compose stop upstream-a >/dev/null
-sleep 12   # > health-check interval(10s)
+echo "== 故障切换：kill 当前选中的 upstream，断言选中真的切换 + 仍通 =="
+sel() { texec curl -s http://mihomo:9090/proxies/PROXY | "${PYTHON:-python3}" -c "import sys,json;print(json.load(sys.stdin)['now'])"; }
+now=$(sel); echo "切换前选中：$now"
+compose stop "$now" >/dev/null
+sleep 12   # > health-check interval(10s)，让 mihomo 标记其不健康
+now2=$(sel)
+[ "$now2" != "$now" ] || fail "故障切换未发生：选中节点仍是 $now"
 out=$(texec curl -s --max-time 8 -x http://mihomo:7890 http://echo-proxied:5678) \
-  || fail "kill upstream 后经代理访问失败（故障切换未生效）"
+  || fail "切换后经代理访问失败"
 echo "$out" | grep -q proxied || fail "切换后返回异常：$out"
+echo "切换：$now → $now2"
 
 echo "PASS: 域名→代理、私网→直连(rule#0 兜底)、故障切换 全过"

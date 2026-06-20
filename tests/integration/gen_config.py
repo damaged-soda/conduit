@@ -25,7 +25,8 @@ def _node(name: str, server: str) -> Node:
 
 
 def main() -> None:
-    cfg = build_subscription([_node("up-a", "upstream-a"), _node("up-b", "upstream-b")], {}, full=False)
+    # proxy 名 = compose 服务名，故障切换断言可直接 `compose stop <选中节点>`
+    cfg = build_subscription([_node("upstream-a", "upstream-a"), _node("upstream-b", "upstream-b")], {}, full=False)
     # 客户端实例设置（订阅产物不含；模拟客户端补上，让 mihomo 能监听 + 暴露 controller）
     cfg = {
         "mixed-port": 7890,
