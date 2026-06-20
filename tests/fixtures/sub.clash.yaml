@@ -1,0 +1,17 @@
+# 合成 clash 订阅夹具：自带 proxies + proxy-groups + rules。
+# normalize 应只取 proxies（2 条有效 + 1 条脏的跳过），丢掉 groups / rules。
+port: 7890
+mode: rule
+
+proxies:
+  - { name: "🇺🇸 US-01 | 1x", type: ss, server: US1.Example.com, port: 8388, cipher: aes-256-gcm, password: pass1, udp: true }
+  - { name: "🇯🇵 JP-01", type: trojan, server: jp1.example.com, port: 443, password: tjpass, sni: jp1.example.com }
+  - { name: "broken", type: ss }   # 缺 server/port → 应被跳过
+
+proxy-groups:
+  - { name: Auto, type: url-test, proxies: ["🇺🇸 US-01 | 1x", "🇯🇵 JP-01"], url: "http://www.gstatic.com/generate_204", interval: 300 }
+
+rules:
+  - DOMAIN-SUFFIX,netflix.com,Auto
+  - GEOIP,CN,DIRECT
+  - MATCH,Auto

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from .ingest import normalize as _normalize_one
 from .models import AccessId, Node, NodeTags
 from .render import render as _render
 
@@ -16,9 +17,12 @@ def fetch(sources: list[dict]) -> list[bytes]:
     raise NotImplementedError
 
 
-def normalize(raw: list[bytes]) -> list[Node]:
-    """解析为统一 Node 列表，算两层身份（endpoint_id / access_id）。丢弃订阅自带的规则系统。"""
-    raise NotImplementedError
+def normalize(imports: list[dict]) -> list[Node]:
+    """每个 import = {raw, type, id}：解析为统一 Node 列表，算两层身份，丢弃订阅自带规则。实现见 ingest.py。"""
+    out: list[Node] = []
+    for imp in imports:
+        out += _normalize_one(imp["raw"], imp.get("type", "clash"), imp.get("id", ""))
+    return out
 
 
 def tag(nodes: list[Node]) -> dict[AccessId, NodeTags]:
