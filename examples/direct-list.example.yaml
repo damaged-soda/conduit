@@ -1,9 +1,13 @@
-# 必须直连、最高优先级的目的地。conduit 保证它们 DIRECT，但不关心内容。
-# 调用方填自己的现状（私有 mesh / 内网 / 任何东西）。下面全是占位值。
+# 必须直连、最高优先级的目的地。conduit 保证它们直连，但不关心内容。
+# 这组会被同时渲染到三处：DIRECT 规则 / fake-ip 放行 / TUN route-exclude。
+# 调用方填自己的现状（私有 mesh / 内网等）。下面全是占位值。
 direct:
-  cidr:
+  domain_exact:
+    - "host.example-internal"
+  domain_suffix:
+    - "example-internal"        # 匹配 *.example-internal 及其本身
+  domain_wildcard:
+    - "*.corp.example"
+  ip_cidr:
     - "10.0.0.0/8"
-  domain:
-    - "*.example-internal"
-  ip:
-    - "203.0.113.7/32"
+    - "203.0.113.7/32"          # 单 IP 也写成 /32 CIDR
