@@ -3,8 +3,8 @@
 每个不变量是一个返回「违规列表」的函数：good 夹具应当无违规，**坏夹具（mihomo.bad.yaml）必须被抓出违规**——
 后者防「假绿」（检查写错了会让坏配置也过）。render() 实现后，把 good 夹具换成 render() 真实输出即可。
 
-待补（见 Codex 第 2 轮 review）：SUB-RULE 递归校验、fake-ip-filter-mode: rule、domain_wildcard→mihomo 规则映射、
-fallback 健康检查频率预算、mihomo -t 负例语料、controller 绑定/secret 生产不变量。
+待补（见 Codex review）：SUB-RULE 递归校验、fake-ip-filter-mode: rule、fallback 健康检查频率预算、
+controller 绑定/secret 生产不变量、按不变量拆的多负例语料。
 """
 
 from __future__ import annotations
@@ -25,12 +25,14 @@ BAD = HERE / "fixtures" / "mihomo.bad.yaml"
 DIRECT = {
     "domain_exact": ["host.example-internal"],
     "domain_suffix": ["example-internal"],
+    "domain_wildcard": ["*.corp.example"],
     "ip_cidr": ["10.0.0.0/8", "fd00::/8"],  # IPv4 + IPv6
-    # domain_wildcard 暂缓：→ mihomo 规则映射待 render 设计
 }
 
 TERMINALS = {"DIRECT", "REJECT", "REJECT-DROP", "PASS"}
 LOGICAL = {"AND", "OR", "NOT"}
+# direct-list 各类型 → mihomo 规则类型（mihomo 确有 DOMAIN-WILDCARD，语义与 Clash 不同）
+DOMAIN_RULE = {"domain_exact": "DOMAIN", "domain_suffix": "DOMAIN-SUFFIX", "domain_wildcard": "DOMAIN-WILDCARD"}
 
 
 def load(path: pathlib.Path) -> dict:
@@ -99,6 +101,10 @@ def _domain_covered(domain: str, patterns: list[str]) -> bool:
     return False
 
 
+def _direct_payloads_by_rule_type(cfg: dict, rule_type: str) -> set[str]:
+    return {p[1] for p in rules(cfg) if p[0] == rule_type and rule_outbound(p) == "DIRECT"}
+
+
 # ---- 不变量：返回违规列表（空 = 通过）----
 
 def check_direct_first_and_match(cfg: dict, direct: dict) -> list[str]:
@@ -113,6 +119,7 @@ def check_direct_first_and_match(cfg: dict, direct: dict) -> list[str]:
     want = (
         set(direct.get("domain_exact", []))
         | set(direct.get("domain_suffix", []))
+        | set(direct.get("domain_wildcard", []))
         | {_norm_cidr(c) for c in direct.get("ip_cidr", [])}
     )
     direct_idx = []
@@ -133,39 +140,50 @@ def check_direct_first_and_match(cfg: dict, direct: dict) -> list[str]:
 
 
 def check_three_places(cfg: dict, direct: dict) -> list[str]:
-    """每个 direct 目的地必须同时：① DIRECT 规则 ② fake-ip 放行（开 fake-ip 时）③ TUN route-exclude（开 auto-route 时）。"""
+    """每个 direct 目的地必须同时：① 对应类型的 DIRECT 规则 ② fake-ip 放行（开 fake-ip 时）③ TUN route-exclude（开 auto-route 时）。"""
     v: list[str] = []
-    rp = rules(cfg)
-    domains = list(direct.get("domain_exact", [])) + list(direct.get("domain_suffix", []))
 
-    # ①
-    direct_domain = {p[1] for p in rp if p[0] in ("DOMAIN", "DOMAIN-SUFFIX") and rule_outbound(p) == "DIRECT"}
-    direct_cidr = {_norm_cidr(p[1]) for p in rp if p[0] in ("IP-CIDR", "IP-CIDR6") and rule_outbound(p) == "DIRECT"}
-    for d in domains:
-        if d not in direct_domain:
-            v.append(f"域名 {d} 缺 DIRECT 规则")
+    # ① DIRECT 规则，按类型精确校验（exact→DOMAIN / suffix→DOMAIN-SUFFIX / wildcard→DOMAIN-WILDCARD）
+    for key, rtype in DOMAIN_RULE.items():
+        have = _direct_payloads_by_rule_type(cfg, rtype)
+        for d in direct.get(key, []):
+            if d not in have:
+                v.append(f"{key} {d} 缺 {rtype} DIRECT 规则")
+    cidr_direct = {_norm_cidr(p[1]) for p in rules(cfg) if p[0] in ("IP-CIDR", "IP-CIDR6") and rule_outbound(p) == "DIRECT"}
     for c in direct.get("ip_cidr", []):
-        if _norm_cidr(c) not in direct_cidr:
-            v.append(f"CIDR {c} 缺 DIRECT 规则")
+        if _norm_cidr(c) not in cidr_direct:
+            v.append(f"ip_cidr {c} 缺 DIRECT 规则")
 
-    # ②
+    # ② fake-ip 放行（开 fake-ip 时）：对 suffix/wildcard 不只测 apex，还测一个哨兵子域
     dns = cfg.get("dns", {})
     if dns.get("enhanced-mode") == "fake-ip":
         filt = dns.get("fake-ip-filter", [])
-        for d in domains:
-            if not _domain_covered(d, filt):
-                v.append(f"域名 {d} 不在 fake-ip-filter（会被解析成假 IP）")
+        samples: list[str] = list(direct.get("domain_exact", []))
+        for d in direct.get("domain_suffix", []):
+            samples += [d, "sentinel." + d]
+        for w in direct.get("domain_wildcard", []):
+            samples.append("sentinel." + (w[2:] if w.startswith("*.") else w))
+        for s in samples:
+            if not _domain_covered(s, filt):
+                v.append(f"域名 {s} 不在 fake-ip-filter（会被解析成假 IP）")
 
-    # ③
+    # ③ TUN 路由排除（开 TUN 且 auto-route 时）：direct CIDR 必须被某条 exclude 覆盖
     tun = cfg.get("tun", {})
     if tun.get("enable"):
         if not tun.get("auto-route"):
             v.append("TUN 开了但 auto-route 未开：route-exclude 语义不明，直连 CIDR 可能仍被劫持")
         else:
-            excl = {_norm_cidr(c) for c in tun.get("route-exclude-address", [])}
+            excl = [_norm_cidr(c) for c in tun.get("route-exclude-address", [])]
+            excl_nets = []
+            for c in excl:
+                try:
+                    excl_nets.append(ipaddress.ip_network(c, strict=False))
+                except ValueError:
+                    pass
             for c in direct.get("ip_cidr", []):
-                if _norm_cidr(c) not in excl:
-                    v.append(f"CIDR {c} 不在 tun.route-exclude-address")
+                net = ipaddress.ip_network(c, strict=False)
+                if not any(net.version == e.version and net.subnet_of(e) for e in excl_nets):
+                    v.append(f"CIDR {c} 未被 tun.route-exclude-address 覆盖")
     return v
 
 
@@ -227,9 +245,11 @@ def test_good_fixture_is_clean():
 
 
 def test_bad_fixture_is_caught():
-    """坏配置必须被至少一个不变量抓到，否则说明检查无效（假绿）。"""
-    flat = [m for ms in all_violations(load(BAD)).values() for m in ms]
-    assert flat, "坏夹具竟然没被任何不变量抓到——检查形同虚设"
+    """坏配置必须被抓到，且这几个关键检查各自都要抓到它对应的坑（防某检查静默失效被别的掩盖）。"""
+    v = all_violations(load(BAD))
+    assert any(v.values()), "坏夹具竟然没被任何不变量抓到——检查形同虚设"
+    for key in ("direct_first", "rule_targets", "group_members"):
+        assert v[key], f"检查 {key} 没抓到坏夹具里它应抓的违规"
 
 
 @pytest.mark.skipif(shutil.which("mihomo") is None, reason="mihomo 未安装")

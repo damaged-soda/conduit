@@ -34,7 +34,7 @@
 
 ## 关键测试：私有网旁路（rule#0）
 
-调用方的「必须直连」里通常有一张私有网 overlay（在 fleet 场景里是 tailscale 加它的中继 / 控制面）。TUN 一旦把它的**底层**抓走，整张 mesh 就断 —— 这是最危险、最该测的一条，而它**能在 Docker 里 faithful 地测**。
+调用方的「必须直连」里通常有一张私有网 overlay（在 fleet 场景里是 tailscale 加它的中继 / 控制面）。TUN 一旦把它的**底层**抓走，整张 mesh 就断 —— 这是最危险、最该测的一条，而它**能在 Docker（Linux 容器 netns）里相当真实地测**（只对 Linux 路径 faithful，注意见下）。
 
 **怎么测：** privileged 容器里跑**真的 overlay**（如 tailscale，join 一个**一次性** tailnet：headscale 或 ephemeral+tagged 节点，测完自动清）+ 同 netns 的 mihomo TUN（带调用方的 direct-list）。断言：**mihomo TUN 开着时，仍能连到 overlay 的 peer**。能连 = 旁路对；连不上 = mesh 被抓断。
 
@@ -43,9 +43,15 @@
 - 推论：**direct-list 不只是排除私有网 CIDR，还要排除中继 IP / 控制面域名 / 处理底层**。这只有跑真 overlay 才暴露得出来。
 - 平台差异也在这里放大：Linux 上 overlay 用 fwmark + ip rule 防回环，跟 mihomo 的 auto-route 谁优先只能实测；macOS 机制不同（属上面的残差）。
 
+**注意（按 Codex review）：**
+- 「faithful」仅限 **Linux 容器 netns**，不覆盖 macOS utun/resolver，也不自动覆盖真实 DERP / 控制面的公网路径。
+- 把 rule#0 拆成两类测：① 本地 headscale/peer 在同 netns 的**路由冲突**；② **中继 / 控制面 / bootstrap 可达性**。
+- `internal: true` 隔离公网 ⇒ headscale / DERP **必须放进测试网内**，否则 tailscale 根本起不来。
+- 容器内 tailscale 要 **kernel 模式**（`TS_USERSPACE=false`）+ `cap_add: [NET_ADMIN, NET_RAW]` + `/dev/net/tun` + 一次性 state/auth key；诊断时 dump `ip rule` / `ip route` / fwmark。
+
 ## 分层（便宜 → 贵）
 
-1. **golden 配置不变量**（零网络）—— `tests/`：断言 direct-list 三处覆盖一致、规则只引用 group 不指向节点、DIRECT 必须最前等。最安全，先跑。
+1. **golden 配置不变量**（零网络）—— `tests/`：断言 direct-list 三处覆盖一致、规则只引用 group 不指向节点、DIRECT 必须最前等。最安全，先跑（`pip install -e '.[dev]' && pytest`）。
 2. **Docker 集成**（隔离 Linux netns）—— `tests/integration/`：代理 + TUN + **私有网旁路**，实测路由 / 故障切换 / mesh 不断。
 3. **首次上线 + 安全网**：只放过了 1、2 的配置。`dead-man` timer（不续命就自动回退到已知 good / 纯直连）、reload 不 restart、apply 前先 validate。**break-glass 入口也必须在 direct-list 里**，且 rollback 机制**不依赖 mihomo 本身**。
    - macOS 残差默认压到这一层用安全网兜；真不放心，再加一次性 macOS VM 单独冒烟。
@@ -59,7 +65,7 @@
 - **私有网旁路变体**还没落成 compose（headscale + tailscale + privileged mihomo-TUN + peer 可达性断言）——设计见上「关键测试」。
 - **规则解析**：已做括号感知切分；SUB-RULE 递归校验仍 TODO。
 - **fake-ip**：`fake-ip-filter-mode: rule`、私有域名的 `nameserver-policy` / `direct-nameserver` 需求未纳入断言。
-- **direct-list**：`domain_wildcard` → mihomo 规则类型映射待 render 设计（mihomo 无 `DOMAIN-WILDCARD` 规则）。
+- **direct-list**：`domain_wildcard` → mihomo `DOMAIN-WILDCARD` 规则（其通配语义与 Clash 不同，且区别于 fake-ip-filter 的通配）；golden 已覆盖该映射。
 - **可用性**：fallback 健康检查频率预算；group health-check 不覆盖 `use:` provider —— 数据面 fallback 要么不用 `use:`、要么 provider 另配 health-check。
 - **集成断言**：量化切换耗时、用 `/proxies` 确认选中节点、长连接确认 chain；镜像固定版本。
 - **break-glass**：拆成 域名 / 固定 IP / 解析 DNS / 控制面入口，并在残差冒烟里实测 rollback timer 不依赖 mihomo。

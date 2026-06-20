@@ -5,7 +5,7 @@
 ⚠️ Docker on Mac 是 Linux VM —— 这层验的是 **Linux/rig 路径**；macOS 原生 TUN/utun 要上 MBA 实机（TESTING.md 第 3 层）。
 
 ## 组成
-- `compose.yaml`：mihomo（被测）+ upstream-a/b（gost，可 kill）+ echo-health（本地健康目标）+ echo-proxied/echo-direct（标记走了哪条路）+ tester（curl）。网络 `internal: true`，**真隔离无公网**。
+- `compose.yaml`：mihomo + upstream-a/b（gost，可 kill）+ echo-health + echo-proxied/echo-direct + tester。三张 `internal` 网络做**结构化证明**：echo-proxied 只在 backnet（mihomo 必须经 upstream → 证明走代理）、echo-direct 只在 directnet（upstream 到不了 → 证明走直连）。全程无公网。
 - `mihomo.proxy-only.yaml`：被测的 mihomo 配置（无 TUN，上游指向 compose mock 代理，健康检查打 echo-health）。**临时手写，后续换成 render() 产物**。
 - `run.sh`：测试流程（readiness → 路由 → 故障切换）。**首版断言，未在本机实跑验证**——在 MBA 上跑通后固化。
 
