@@ -203,6 +203,16 @@ def test_sub_clash_empty_is_valid_all_direct():
     assert cfg["rules"] == ["MATCH,DIRECT"]  # 无节点 → 合法的全直连配置
 
 
+def test_sub_clash_has_china_direct_rules():
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    token = c.get("/api/sub-token").json()["token"]
+    cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
+    assert "GEOSITE,cn,DIRECT" in cfg["rules"] and "GEOIP,CN,DIRECT,no-resolve" in cfg["rules"]
+    assert cfg["rules"][-1] == "MATCH,PROXY"
+
+
 def test_node_list_has_region_fields():
     c = _client()
     sid = _mksub(c)

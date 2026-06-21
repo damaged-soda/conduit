@@ -23,6 +23,7 @@ import hashlib
 import yaml
 
 from .models import Node
+from .policy import DEFAULT_POLICY, policy_rules
 from .tags import region_of
 
 _HEALTH_URL = "http://www.gstatic.com/generate_204"
@@ -180,7 +181,9 @@ def render(nodes: list[Node], target: str, direct_list: dict, overlay: dict) -> 
     return yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True)
 
 
-def build_subscription(nodes: list[Node], direct: dict, full: bool = False, tags: dict | None = None) -> dict:
+def build_subscription(
+    nodes: list[Node], direct: dict, full: bool = False, tags: dict | None = None, policy: dict | None = None
+) -> dict:
     """订阅用配置：标准 clash 骨架 + 按 region 分组的 proxy-groups + 规则；`full=True` 再加 dns+tun。
 
     必须带标准顶层骨架（port/mode/log-level…）：clash-verge 等 GUI 的导入校验会**静默拒绝**只有
@@ -195,6 +198,7 @@ def build_subscription(nodes: list[Node], direct: dict, full: bool = False, tags
     region 优先用 override，否则 `region_of(raw_name)`。标签按 access_id 存 → 跟着节点走，不跟订阅。
     """
     tags = tags or {}
+    policy = policy or DEFAULT_POLICY
     cfg: dict = {
         "port": 7890,
         "socks-port": 7891,
@@ -255,14 +259,20 @@ def build_subscription(nodes: list[Node], direct: dict, full: bool = False, tags
     groups += [_fallback_group(r, by_region[r]) for r in region_order]
     cfg["proxy-groups"] = groups
 
-    # 兜底私网/tailnet 直连在最前 → 调用方 direct-list → 其余走 PROXY（顶层 select）
-    cfg["rules"] = _direct_rules({"ip_cidr": _BASELINE_DIRECT}) + _direct_rules(direct) + ["MATCH,PROXY"]
+    # 私网/tailnet 兜底直连(rule#0) → 调用方 direct-list → 策略(reject→direct) → MATCH,final
+    final = policy.get("final", "PROXY")
+    cfg["rules"] = (
+        _direct_rules({"ip_cidr": _BASELINE_DIRECT})
+        + _direct_rules(direct)
+        + policy_rules(policy)
+        + [f"MATCH,{final}"]
+    )
     return cfg
 
 
 def render_subscription(
-    nodes: list[Node], direct_list: dict, full: bool = False, tags: dict | None = None
+    nodes: list[Node], direct_list: dict, full: bool = False, tags: dict | None = None, policy: dict | None = None
 ) -> str:
     return yaml.safe_dump(
-        build_subscription(nodes, direct_list, full, tags), sort_keys=False, allow_unicode=True
+        build_subscription(nodes, direct_list, full, tags, policy), sort_keys=False, allow_unicode=True
     )
