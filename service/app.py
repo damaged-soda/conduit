@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from conduit.ingest import normalize
-from conduit.policy import DEFAULT_POLICY
+from conduit.policy import DEFAULT_POLICY, GEOIP_CATALOG, GEOSITE_CATALOG
 from conduit.render import render_subscription, subscription_rules
 from conduit.tags import normalize_region, region_of
 
@@ -195,18 +195,27 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
     def list_groups():
         return {"targets": _groups()}
 
+    @app.get("/api/categories")
+    def list_categories():
+        # 编辑器从这里取可选类别（白名单 → 防写出加载失败的坏类别）。
+        return {"geosite": GEOSITE_CATALOG, "geoip": GEOIP_CATALOG, "rule_set": list(DEFAULT_POLICY.get("rule_providers", {}))}
+
     @app.put("/api/policy")
     def put_policy(body: PolicyIn):
         if len(body.routes) > 100:
             raise HTTPException(400, "routes 过多")
         valid_rs = set(DEFAULT_POLICY.get("rule_providers", {}))
+        # 服务端白名单校验（前端预检不是安全边界，API 直调也得挡住坏类别）
         for r in body.routes:
-            for cat in [*r.geosite, *r.geoip]:
-                if not _RULESET_NAME.fullmatch(cat):
-                    raise HTTPException(400, f"非法类别名：{cat}")
+            for cat in r.geosite:
+                if cat not in GEOSITE_CATALOG:
+                    raise HTTPException(400, f"未知 geosite 类别：{cat}")
+            for cat in r.geoip:
+                if cat not in GEOIP_CATALOG:
+                    raise HTTPException(400, f"未知 geoip 类别：{cat}")
             for rs in r.rule_set:
                 if rs not in valid_rs:
-                    raise HTTPException(400, f"未知规则集：{rs}（v1 仅支持 {sorted(valid_rs)}）")
+                    raise HTTPException(400, f"未知规则集：{rs}（仅支持 {sorted(valid_rs)}）")
         store.set_policy({"routes": [r.model_dump() for r in body.routes], "final": body.final})
         return {"ok": True}
 
@@ -400,12 +409,13 @@ async function loadSub(){
     el('div','clash 订阅（导入 clash-verge / mihomo）：'), el('code',base),
     el('div','带 DNS/TUN：'), el('code',base+'&full=1'));
 }
-let POL=null, TARGETS=[], CUSTOM=false, EDIT=false, RULES=[];
+let POL=null, TARGETS=[], CATS={}, CUSTOM=false, EDIT=false, RULES=[];
 async function loadPolicy(){
   const d=await j('/api/policy');
   POL={routes:JSON.parse(JSON.stringify(d.policy.routes||[])),final:d.policy.final||'PROXY'};
   CUSTOM=d.custom;RULES=d.rules;EDIT=false;
   try{TARGETS=(await j('/api/groups')).targets}catch(e){TARGETS=['DIRECT','REJECT','PROXY','AUTO']}
+  try{CATS=await j('/api/categories')}catch(e){CATS={geosite:[],geoip:[],rule_set:[]}}
   renderPolicy();
 }
 function targetSel(val,fn){const s=document.createElement('select');const opts=TARGETS.slice();if(opts.indexOf(val)<0)opts.push(val);
@@ -455,11 +465,11 @@ function routeEditor(r,i){
     const s=document.createElement('span');s.style.cssText='display:inline-block;border:1px solid #bbb;border-radius:10px;padding:1px 4px 1px 8px;margin:2px;font-size:11px';
     s.append(el('span',(k==='rule_set'?'规则集:':k+':')+n));s.append(btn('×',()=>{r[k].splice(idx,1);renderPolicy()}));mbox.append(s)}));
   d.append(mbox);
-  const ks=document.createElement('select');[['geosite','域名类别'],['geoip','IP国家'],['rule_set','规则集']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;ks.append(o)});
-  const nv=input('类别名(如 telegram / CN / ai)');nv.style.width='150px';
-  const add=btn('＋匹配',async()=>{const k=ks.value,name=nv.value.trim();if(!name)return;
-    if(k!=='rule_set'){try{await j('/api/ruleset?kind='+k+'&name='+encodeURIComponent(name))}catch(e){if(!confirm(name+' 在 '+k+' 里查不到，仍添加？'))return}}
-    r[k]=r[k]||[];r[k].push(name);nv.value='';renderPolicy()});
+  const ks=document.createElement('select');[['geosite','域名类别'],['geoip','IP国家/集'],['rule_set','规则集']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;ks.append(o)});
+  const nv=document.createElement('select');
+  const fillNames=()=>{nv.replaceChildren();(CATS[ks.value]||[]).forEach(n=>{const o=document.createElement('option');o.value=o.textContent=n;nv.append(o)})};
+  ks.onchange=fillNames;fillNames();
+  const add=btn('＋匹配',()=>{const k=ks.value,name=nv.value;if(!name)return;r[k]=r[k]||[];if(r[k].indexOf(name)<0)r[k].push(name);renderPolicy()});
   d.append(row(el('span','加匹配:'),ks,nv,add));
   return d;
 }

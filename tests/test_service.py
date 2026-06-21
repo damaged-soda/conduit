@@ -221,6 +221,16 @@ def test_policy_put_rejects_bad():
     assert c.put("/api/policy", json={"routes": [{"to": "X", "geosite": ["a/b"]}]}).status_code == 400
 
 
+def test_categories_and_allowlist():
+    c = _client()
+    cats = c.get("/api/categories").json()
+    assert "netflix" in cats["geosite"] and "CN" in cats["geoip"] and "ai" in cats["rule_set"]
+    assert c.put("/api/policy", json={"routes": [{"to": "HK", "geosite": ["netflix"]}], "final": "PROXY"}).status_code == 200
+    # 白名单外拒绝（即便格式合法）—— 服务端安全边界，挡 API 直调写坏类别
+    assert c.put("/api/policy", json={"routes": [{"to": "HK", "geosite": ["notacategory"]}]}).status_code == 400
+    assert c.put("/api/policy", json={"routes": [{"to": "HK", "geoip": ["XX"]}]}).status_code == 400
+
+
 def test_policy_edit_reflects_in_sub():
     c = _client()
     sid = _mksub(c)
