@@ -57,6 +57,19 @@ def policy_rules(policy: dict, resolve=None) -> list[str]:
     rules: list[str] = []
     for route in policy.get("routes", []):
         to = resolve(route["to"])
+        # 显式匹配（拓扑绕行：tailnet 域名 / DERP / 控制 IP / ssh 进程 / 端口）
+        for d in route.get("domain_suffix", []):
+            rules.append(f"DOMAIN-SUFFIX,{d},{to}")
+        for d in route.get("domain", []):
+            rules.append(f"DOMAIN,{d},{to}")
+        for c in route.get("ip_cidr", []):
+            rt = "IP-CIDR6" if ":" in c else "IP-CIDR"
+            rules.append(f"{rt},{c},{to},no-resolve")
+        for p in route.get("process_name", []):
+            rules.append(f"PROCESS-NAME,{p},{to}")
+        for p in route.get("dst_port", []):
+            rules.append(f"DST-PORT,{p},{to}")
+        # 类别匹配
         for name in route.get("rule_set", []):
             if name not in providers:  # 编辑后可能引用未声明 provider → 跳过，别产坏配置
                 continue

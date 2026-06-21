@@ -40,6 +40,25 @@ def test_subscription_rule_order():
     assert 0 < rules.index("GEOSITE,cn,DIRECT") < len(rules) - 1
 
 
+def test_explicit_matchers():
+    pol = {"routes": [{"to": "DIRECT", "domain_suffix": ["tailscale.com"], "domain": ["derp.x"],
+                       "ip_cidr": ["123.57.92.37/32"], "process_name": ["ssh"], "dst_port": ["22"]}], "final": "PROXY"}
+    rules = policy_rules(pol)
+    assert "DOMAIN-SUFFIX,tailscale.com,DIRECT" in rules
+    assert "DOMAIN,derp.x,DIRECT" in rules
+    assert "IP-CIDR,123.57.92.37/32,DIRECT,no-resolve" in rules
+    assert "PROCESS-NAME,ssh,DIRECT" in rules and "DST-PORT,22,DIRECT" in rules
+
+
+def test_full_mode_dns_tun_from_direct_routes():
+    pol = {"routes": [{"to": "DIRECT", "domain_suffix": ["ts.net"], "ip_cidr": ["123.57.92.37/32"]}],
+           "final": "PROXY", "dns": {"nameserver_policy": {"+.ts.net": "100.100.100.100"}}}
+    cfg = build_subscription([_node("🇭🇰 HK 01")], {}, full=True, policy=pol)
+    assert "+.ts.net" in cfg["dns"]["fake-ip-filter"]
+    assert cfg["dns"]["nameserver-policy"] == {"+.ts.net": "100.100.100.100"}
+    assert "123.57.92.37/32" in cfg["tun"]["route-exclude-address"]
+
+
 def test_custom_final_group():
     rules = build_subscription([_node("🇯🇵 JP 01")], {}, policy={"final": "JP"})["rules"]
     assert rules[-1] == "MATCH,JP"
