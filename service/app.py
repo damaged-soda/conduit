@@ -313,13 +313,28 @@ async function loadSub(){
     el('div','带 DNS/TUN：'), el('code',base+'&full=1'));
 }
 async function loadPolicy(){
-  const {rules}=await j('/api/policy');
+  const {policy,rules}=await j('/api/policy');
+  const out=document.createElement('div');
+  out.append(el('div','分流规则（匹配 → 目标组；按从上到下首命中。改规则编辑仓库 conduit/policy.py）'));
+  const tbl=document.createElement('table');tbl.style.cssText='max-width:620px;font-size:12px';
+  const head=document.createElement('tr');['匹配','类别/来源','目标'].forEach(h=>head.append(el('th',h)));tbl.append(head);
+  const row=(name,cats,to)=>{const tr=document.createElement('tr');
+    const c1=el('td',name);c1.style.fontWeight='600';
+    const c2=el('td',cats);c2.className='muted';
+    tr.append(c1,c2,el('td','→ '+to));tbl.append(tr)};
+  row('私网 / tailnet','rule#0 内置兜底','DIRECT');
+  (policy.routes||[]).forEach(r=>{
+    const cats=[...(r.geosite||[]).map(x=>'geosite:'+x),...(r.geoip||[]).map(x=>'geoip:'+x),...(r.rule_set||[]).map(x=>'规则集:'+x)].join(' · ');
+    row(r.name||'(规则)',cats,r.to);
+  });
+  row('其余','兜底 MATCH',policy.final||'PROXY');
+  out.append(tbl);
   const det=document.createElement('details');
-  const sm=document.createElement('summary');sm.textContent=`分流规则 · ${rules.length} 条（China-direct/广告拦/兜底；改规则编辑仓库 conduit/policy.py）`;det.append(sm);
+  const sm=document.createElement('summary');sm.textContent=`查看生成的 ${rules.length} 条 mihomo 规则`;det.append(sm);
   const ul=document.createElement('ul');ul.style.cssText='margin:4px 0;padding-left:18px;font-size:11px';
   rules.forEach(r=>{const li=document.createElement('li');li.textContent=r;ul.append(li)});
-  det.append(ul);
-  document.getElementById('policy').replaceChildren(det);
+  det.append(ul);out.append(det);
+  document.getElementById('policy').replaceChildren(out);
 }
 loadSubs(); loadSub(); loadPolicy();
 </script>

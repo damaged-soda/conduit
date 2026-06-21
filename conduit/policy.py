@@ -26,10 +26,10 @@ DEFAULT_POLICY: dict = {
     },
     # 路由：一组匹配 → 一个目标，顺序即优先级
     "routes": [
-        {"to": "REJECT", "geosite": ["category-ads-all"]},  # 广告 → 拒绝
-        {"to": "DIRECT", "geosite": ["cn"], "geoip": ["CN"]},  # 中国域名/IP → 直连
-        {"to": "US", "rule_set": ["ai"]},  # ChatGPT/Claude 等 → 美国组
-        {"to": "HK", "rule_set": ["netflix", "disney", "youtube"]},  # 流媒体 → 香港组
+        {"name": "广告", "to": "REJECT", "geosite": ["category-ads-all"]},
+        {"name": "中国大陆", "to": "DIRECT", "geosite": ["cn"], "geoip": ["CN"]},
+        {"name": "AI（ChatGPT/Claude…）", "to": "US", "rule_set": ["ai"]},
+        {"name": "流媒体", "to": "HK", "rule_set": ["netflix", "disney", "youtube"]},
     ],
     "final": "PROXY",  # 其余兜底走哪个组
 }
