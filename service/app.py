@@ -256,6 +256,10 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
             not isinstance(k, str) or not isinstance(v, str) or "\n" in (k + v) for k, v in nsp.items()
         ):
             raise HTTPException(400, "nameserver_policy 非法")
+        for f in ("nameserver", "default_nameserver", "fallback"):
+            v = body.dns.get(f, [])
+            if not isinstance(v, list) or any(not isinstance(s, str) or "\n" in s or len(s) > 200 for s in v):
+                raise HTTPException(400, f"dns.{f} 非法")
         store.set_policy({"routes": [r.model_dump() for r in body.routes], "final": body.final, "dns": body.dns})
         return {"ok": True}
 

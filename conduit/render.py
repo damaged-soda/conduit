@@ -218,14 +218,21 @@ def build_subscription(
             if r.get("to") == "DIRECT":
                 d_domains += [f"+.{x}" for x in r.get("domain_suffix", [])] + list(r.get("domain", []))
                 d_ips += list(r.get("ip_cidr", []))
+        pdns = policy.get("dns", {})
         dns = {
             "enable": True,
+            "ipv6": False,
             "enhanced-mode": "fake-ip",
             "fake-ip-range": "198.18.0.1/16",
+            # default-nameserver（引导 DNS）必须有：否则连 DoH 服务器都没法解析 → 整个 DNS 瘫、出网断。
+            # 含 system → 任何环境都能引导（用 OS 解析器）。可被 policy.dns.default_nameserver 覆盖。
+            "default-nameserver": pdns.get("default_nameserver") or ["system", "223.5.5.5", "8.8.8.8"],
+            "nameserver": pdns.get("nameserver") or ["https://1.1.1.1/dns-query"],
             "fake-ip-filter": ["*.lan", "*.local", "*.arpa", *_fake_ip_filter(direct), *d_domains],
-            "nameserver": ["https://1.1.1.1/dns-query"],
         }
-        nsp = policy.get("dns", {}).get("nameserver_policy", {})
+        if pdns.get("fallback"):
+            dns["fallback"] = pdns["fallback"]
+        nsp = pdns.get("nameserver_policy", {})
         if nsp:  # 如 {'+.ts.net': '100.100.100.100'} —— tailnet 走 MagicDNS
             dns["nameserver-policy"] = nsp
         cfg["dns"] = dns
