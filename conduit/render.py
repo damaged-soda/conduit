@@ -23,7 +23,7 @@ import hashlib
 import yaml
 
 from .models import Node
-from .policy import DEFAULT_POLICY, policy_rules
+from .policy import DEFAULT_POLICY, policy_rules, rule_providers_block
 from .tags import region_of
 
 _HEALTH_URL = "http://www.gstatic.com/generate_204"
@@ -259,20 +259,26 @@ def build_subscription(
     groups += [_fallback_group(r, by_region[r]) for r in region_order]
     cfg["proxy-groups"] = groups
 
-    cfg["rules"] = subscription_rules(direct, policy)
+    # rule-providers（被 routes 引用的 .mrs）；指向「当前不存在的组」的 route 落到 final，保证配置合法
+    final = policy.get("final", "PROXY")
+    valid = {"DIRECT", "REJECT", "PROXY", "AUTO", *region_order}
+    providers = rule_providers_block(policy)
+    if providers:
+        cfg["rule-providers"] = providers
+    cfg["rules"] = subscription_rules(direct, policy, lambda to: to if to in valid else final)
     return cfg
 
 
-def subscription_rules(direct: dict, policy: dict) -> list[str]:
-    """订阅的完整规则序：私网/tailnet 兜底(rule#0) → 调用方 direct-list → 策略(reject→direct) → MATCH,final。
+def subscription_rules(direct: dict, policy: dict, resolve=None) -> list[str]:
+    """订阅的完整规则序：私网/tailnet 兜底(rule#0) → 调用方 direct-list → 策略路由 → MATCH,final。
 
-    规则不依赖具体节点（只依赖 direct-list + 策略），所以可单独给页面展示。
+    规则不依赖具体节点（只依赖 direct-list + 策略），可单独给页面展示。resolve 见 policy_rules。
     """
     final = policy.get("final", "PROXY")
     return (
         _direct_rules({"ip_cidr": _BASELINE_DIRECT})
         + _direct_rules(direct)
-        + policy_rules(policy)
+        + policy_rules(policy, resolve)
         + [f"MATCH,{final}"]
     )
 
