@@ -153,6 +153,16 @@ def test_sub_clash_pure_has_proxies_groups_and_creds():
     assert "pass1" in r.text  # 订阅含明文节点凭据（ss password）→ token 保护是对的
 
 
+def test_sub_clash_has_clash_scaffolding():
+    """clash-verge 导入校验需要标准顶层骨架；只给 proxies/groups/rules 会被静默拒绝。"""
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    token = c.get("/api/sub-token").json()["token"]
+    cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
+    assert cfg["mode"] == "rule" and cfg.get("mixed-port") and "log-level" in cfg
+
+
 def test_sub_clash_has_subscription_headers():
     """clash-verge/mihomo 靠这些头把响应当订阅文件处理（否则导入失败/浏览器直接显示）。"""
     c = _client()

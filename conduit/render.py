@@ -162,12 +162,22 @@ def render(nodes: list[Node], target: str, direct_list: dict, overlay: dict) -> 
 
 
 def build_subscription(nodes: list[Node], direct: dict, full: bool = False) -> dict:
-    """订阅用配置：proxies + PROXY 组 + 规则；`full=True` 再加 dns(fake-ip) + tun。
+    """订阅用配置：标准 clash 骨架 + proxies + PROXY 组 + 规则；`full=True` 再加 dns(fake-ip) + tun。
 
-    **不含** mixed-port / external-controller / allow-lan —— 那些是客户端实例设置，订阅只给「可移植」的部分
-    （proxies/组/规则，full 时加 dns/tun），让 clash-verge / mihomo 无缝导入。
+    必须带标准顶层骨架（port/mode/log-level…）：clash-verge 等 GUI 的导入校验会**静默拒绝**只有
+    proxies/groups/rules 的配置（mihomo 内核宽容能跑，但 GUI 更严）。客户端通常用自己的实例设置
+    覆盖端口/controller。external-controller 不放进来（客户端自管 + 安全）。
     """
-    cfg: dict = {}
+    cfg: dict = {
+        "port": 7890,
+        "socks-port": 7891,
+        "mixed-port": 7893,
+        "allow-lan": False,
+        "mode": "rule",
+        "log-level": "info",
+        "unified-delay": True,
+        "ipv6": False,
+    }
     if full:
         cfg["dns"] = {
             "enable": True,
