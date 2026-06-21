@@ -9,6 +9,7 @@ TODO：tag、render+pull、定时刷新、认证、secret 加密。
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import secrets
@@ -55,15 +56,47 @@ class RouteIn(BaseModel):
     geosite: list[str] = []
     geoip: list[str] = []
     rule_set: list[str] = []
+    domain_suffix: list[str] = []
+    domain: list[str] = []
+    ip_cidr: list[str] = []
+    process_name: list[str] = []
+    dst_port: list[str] = []
 
 
 class PolicyIn(BaseModel):
     routes: list[RouteIn] = []
     final: str = "PROXY"
+    dns: dict = {}  # {nameserver_policy: {pattern: server}}（full 模式 tailnet DNS）
 
 
 _MRS_BASE = "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo"
 _RULESET_NAME = re.compile(r"^[A-Za-z0-9_!.-]+$")  # 防 ../ 路径穿越
+_DOMAINPAT = re.compile(r"[A-Za-z0-9_.*!+-]{1,100}")  # 显式域名匹配（无逗号换行 → 防规则注入）
+_PLAINVAL = re.compile(r"[^,\n\r]{1,100}")  # 进程名等（无逗号换行）
+_PORTPAT = re.compile(r"\d{1,5}(-\d{1,5})?")
+
+
+def _validate_matchers(r) -> None:
+    """显式匹配值格式校验（用户自填 → 防规则注入 / 坏值）。"""
+    for d in [*r.domain_suffix, *r.domain]:
+        if not _DOMAINPAT.fullmatch(d):
+            raise HTTPException(400, f"非法域名：{d}")
+    norm = []
+    for c in r.ip_cidr:
+        try:
+            norm.append(str(ipaddress.ip_network(c, strict=False)))  # 规范化：单 IP → /32，避免不确定的 IP-CIDR
+        except ValueError:
+            raise HTTPException(400, f"非法 IP/CIDR：{c}")
+    r.ip_cidr = norm
+    for p in r.process_name:
+        if not _PLAINVAL.fullmatch(p):
+            raise HTTPException(400, f"非法进程名：{p}")
+    for p in r.dst_port:
+        if not _PORTPAT.fullmatch(p):
+            raise HTTPException(400, f"非法端口：{p}")
+        parts = [int(x) for x in p.split("-")]
+        if any(x > 65535 for x in parts) or (len(parts) == 2 and parts[0] > parts[1]):
+            raise HTTPException(400, f"非法端口：{p}")
 
 
 def _check_url(url: str | None) -> None:
@@ -172,6 +205,7 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
             "rule_providers": DEFAULT_POLICY.get("rule_providers", {}),
             "routes": stored.get("routes", []),
             "final": stored.get("final", "PROXY"),
+            "dns": stored.get("dns", {}),
         }
 
     def _groups() -> list[str]:
@@ -216,7 +250,13 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
             for rs in r.rule_set:
                 if rs not in valid_rs:
                     raise HTTPException(400, f"未知规则集：{rs}（仅支持 {sorted(valid_rs)}）")
-        store.set_policy({"routes": [r.model_dump() for r in body.routes], "final": body.final})
+            _validate_matchers(r)
+        nsp = body.dns.get("nameserver_policy", {})
+        if not isinstance(nsp, dict) or any(
+            not isinstance(k, str) or not isinstance(v, str) or "\n" in (k + v) for k, v in nsp.items()
+        ):
+            raise HTTPException(400, "nameserver_policy 非法")
+        store.set_policy({"routes": [r.model_dump() for r in body.routes], "final": body.final, "dns": body.dns})
         return {"ok": True}
 
     @app.delete("/api/policy")
@@ -410,9 +450,12 @@ async function loadSub(){
     el('div','带 DNS/TUN：'), el('code',base+'&full=1'));
 }
 let POL=null, TARGETS=[], CATS={}, CUSTOM=false, EDIT=false, RULES=[];
+const MKEYS=['domain_suffix','domain','ip_cidr','process_name','dst_port','geosite','geoip','rule_set'];
+const MLABEL={geosite:'geosite',geoip:'geoip',rule_set:'规则集',domain_suffix:'域名后缀',domain:'域名',ip_cidr:'IP段',process_name:'进程',dst_port:'端口'};
+const CATKINDS=['geosite','geoip','rule_set'];
 async function loadPolicy(){
   const d=await j('/api/policy');
-  POL={routes:JSON.parse(JSON.stringify(d.policy.routes||[])),final:d.policy.final||'PROXY'};
+  POL={routes:JSON.parse(JSON.stringify(d.policy.routes||[])),final:d.policy.final||'PROXY',dns:JSON.parse(JSON.stringify(d.policy.dns||{}))};
   CUSTOM=d.custom;RULES=d.rules;EDIT=false;
   try{TARGETS=(await j('/api/groups')).targets}catch(e){TARGETS=['DIRECT','REJECT','PROXY','AUTO']}
   try{CATS=await j('/api/categories')}catch(e){CATS={geosite:[],geoip:[],rule_set:[]}}
@@ -431,11 +474,15 @@ function readonlyView(){
   out.append(el('div','匹配 → 目标组；从上到下首命中。点类别看里面匹配什么。'));
   const tbl=document.createElement('table');tbl.style.cssText='max-width:660px;font-size:12px';
   const insp=document.createElement('div');insp.className='muted';insp.style.cssText='margin-top:6px;font-size:11px;word-break:break-all';
-  const chip=(kind,nm)=>{const a=document.createElement('a');a.href='#';a.textContent=(kind==='rule_set'?'规则集:':kind+':')+nm;a.style.marginRight='10px';
+  const chip=(kind,nm)=>{const lbl=MLABEL[kind]+':'+nm;
+    if(CATKINDS.indexOf(kind)<0){const s=el('span',lbl);s.style.marginRight='10px';return s}
+    const a=document.createElement('a');a.href='#';a.textContent=lbl;a.style.marginRight='10px';
     a.onclick=async(e)=>{e.preventDefault();insp.textContent='加载 '+nm+' …';try{const d=await j('/api/ruleset?kind='+(kind==='rule_set'?'ruleset':kind)+'&name='+encodeURIComponent(nm));insp.replaceChildren(el('b',nm+'：'+d.count+' 条匹配'),el('span','　'+d.sample.slice(0,50).join('   ')))}catch(e2){insp.textContent=nm+' 看不了：'+e2.message}};return a};
   const row3=(nm,cs,to)=>{const tr=document.createElement('tr');const c1=el('td',nm);c1.style.fontWeight='600';const c2=document.createElement('td');cs.forEach(e=>c2.append(e));tr.append(c1,c2,el('td','→ '+to));tbl.append(tr)};
   row3('私网 / tailnet',[el('span','rule#0 兜底')],'DIRECT');
-  POL.routes.forEach(r=>row3(r.name||'(规则)',['geosite','geoip','rule_set'].flatMap(k=>(r[k]||[]).map(x=>chip(k,x))),r.to));
+  POL.routes.forEach(r=>row3(r.name||'(规则)',MKEYS.flatMap(k=>(r[k]||[]).map(x=>chip(k,x))),r.to));
+  const nsp=(POL.dns||{}).nameserver_policy||{};
+  if(Object.keys(nsp).length)row3('DNS解析(full)',[el('span',Object.entries(nsp).map(e=>e[0]+'→'+e[1]).join('  '))],'—');
   row3('其余',[el('span','兜底 MATCH')],POL.final);
   out.append(tbl,insp);
   const det=document.createElement('details');const sm=document.createElement('summary');sm.textContent='查看生成的 '+RULES.length+' 条 mihomo 规则';det.append(sm);
@@ -448,6 +495,11 @@ function editorView(){
   POL.routes.forEach((r,i)=>out.append(routeEditor(r,i)));
   out.append(row(btn('＋ 添加规则',()=>{POL.routes.push({name:'',to:'PROXY',geosite:[],geoip:[],rule_set:[]});renderPolicy()})));
   out.append(row(el('span','其余（兜底）→ '),targetSel(POL.final,v=>POL.final=v)));
+  out.append(el('h4','DNS 解析策略（仅 full 模式 · 如 tailnet +.ts.net 走 MagicDNS）'));
+  POL.dns=POL.dns||{};const nsp=POL.dns.nameserver_policy=POL.dns.nameserver_policy||{};
+  Object.keys(nsp).forEach(pat=>out.append(row(el('span',pat),el('span','→'),el('span',nsp[pat]),btn('×',()=>{delete nsp[pat];renderPolicy()}))));
+  const pIn=input('模式 如 +.ts.net');pIn.style.width='130px';const sIn=input('DNS 如 100.100.100.100');sIn.style.width='150px';
+  out.append(row(el('span','加 DNS:'),pIn,el('span','→'),sIn,btn('+',()=>{const p=pIn.value.trim(),s=sIn.value.trim();if(p&&s){nsp[p]=s;renderPolicy()}})));
   const save=btn('保存',async()=>{try{const r=await fetch('/api/policy',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(POL)});if(!r.ok)throw new Error((await r.json()).detail||r.status);await loadPolicy()}catch(e){alert('保存失败: '+e.message)}});
   const reset=btn('恢复默认',async()=>{if(confirm('恢复仓库默认策略？')){await fetch('/api/policy',{method:'DELETE'});await loadPolicy()}});
   out.append(row(save,reset));
@@ -461,16 +513,18 @@ function routeEditor(r,i){
   const del=btn('✕ 删',()=>{POL.routes.splice(i,1);renderPolicy()});
   d.append(row(el('b','#'+(i+1)),nm,el('span','→'),targetSel(r.to,v=>r.to=v),up,dn,del));
   const mbox=document.createElement('div');mbox.style.cssText='margin:4px 0';
-  ['geosite','geoip','rule_set'].forEach(k=>(r[k]||[]).forEach((n,idx)=>{
+  MKEYS.forEach(k=>(r[k]||[]).forEach((n,idx)=>{
     const s=document.createElement('span');s.style.cssText='display:inline-block;border:1px solid #bbb;border-radius:10px;padding:1px 4px 1px 8px;margin:2px;font-size:11px';
-    s.append(el('span',(k==='rule_set'?'规则集:':k+':')+n));s.append(btn('×',()=>{r[k].splice(idx,1);renderPolicy()}));mbox.append(s)}));
+    s.append(el('span',MLABEL[k]+':'+n));s.append(btn('×',()=>{r[k].splice(idx,1);renderPolicy()}));mbox.append(s)}));
   d.append(mbox);
-  const ks=document.createElement('select');[['geosite','域名类别'],['geoip','IP国家/集'],['rule_set','规则集']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;ks.append(o)});
-  const nv=document.createElement('select');
-  const fillNames=()=>{nv.replaceChildren();(CATS[ks.value]||[]).forEach(n=>{const o=document.createElement('option');o.value=o.textContent=n;nv.append(o)})};
-  ks.onchange=fillNames;fillNames();
-  const add=btn('＋匹配',()=>{const k=ks.value,name=nv.value;if(!name)return;r[k]=r[k]||[];if(r[k].indexOf(name)<0)r[k].push(name);renderPolicy()});
-  d.append(row(el('span','加匹配:'),ks,nv,add));
+  const ks=document.createElement('select');[['domain_suffix','域名后缀'],['domain','域名'],['ip_cidr','IP段'],['process_name','进程名'],['dst_port','端口'],['geosite','geosite类别'],['geoip','geoip类别'],['rule_set','规则集']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;ks.append(o)});
+  const holder=document.createElement('span');let getVal=()=>'';
+  const fillVal=()=>{holder.replaceChildren();const k=ks.value;
+    if(CATKINDS.indexOf(k)>=0){const s=document.createElement('select');(CATS[k]||[]).forEach(n=>{const o=document.createElement('option');o.value=o.textContent=n;s.append(o)});holder.append(s);getVal=()=>s.value}
+    else{const ph=k==='ip_cidr'?'如 100.64.0.0/10':k==='dst_port'?'如 22':k==='process_name'?'如 ssh':'如 tailscale.com';const t=input(ph);t.style.width='150px';holder.append(t);getVal=()=>t.value.trim()}};
+  ks.onchange=fillVal;fillVal();
+  const add=btn('＋匹配',()=>{const k=ks.value,name=getVal();if(!name)return;r[k]=r[k]||[];if(r[k].indexOf(name)<0)r[k].push(name);renderPolicy()});
+  d.append(row(el('span','加匹配:'),ks,holder,add));
   return d;
 }
 loadSubs(); loadSub(); loadPolicy();

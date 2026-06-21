@@ -210,13 +210,25 @@ def build_subscription(
         "ipv6": False,
     }
     if full:
-        cfg["dns"] = {
+        # rule#0 三处之二（fake-ip-filter + tun route-exclude）：从 policy 里 to==DIRECT 的 route 派生
+        # 显式域名/IP（tailnet/DERP/控制面），让它们解析真 IP + 不被 TUN 抓走。
+        d_domains: list[str] = []
+        d_ips: list[str] = []
+        for r in policy.get("routes", []):
+            if r.get("to") == "DIRECT":
+                d_domains += [f"+.{x}" for x in r.get("domain_suffix", [])] + list(r.get("domain", []))
+                d_ips += list(r.get("ip_cidr", []))
+        dns = {
             "enable": True,
             "enhanced-mode": "fake-ip",
             "fake-ip-range": "198.18.0.1/16",
-            "fake-ip-filter": _fake_ip_filter(direct),
+            "fake-ip-filter": ["*.lan", "*.local", "*.arpa", *_fake_ip_filter(direct), *d_domains],
             "nameserver": ["https://1.1.1.1/dns-query"],
         }
+        nsp = policy.get("dns", {}).get("nameserver_policy", {})
+        if nsp:  # 如 {'+.ts.net': '100.100.100.100'} —— tailnet 走 MagicDNS
+            dns["nameserver-policy"] = nsp
+        cfg["dns"] = dns
         cfg["tun"] = {
             "enable": True,
             "stack": "system",
@@ -224,7 +236,7 @@ def build_subscription(
             "auto-detect-interface": True,
             "strict-route": True,
             "dns-hijack": ["any:53", "tcp://any:53"],
-            "route-exclude-address": _BASELINE_DIRECT + list(direct.get("ip_cidr", [])),
+            "route-exclude-address": _BASELINE_DIRECT + list(direct.get("ip_cidr", [])) + d_ips,
         }
 
     # 剔除隔离节点 + 算每个节点的 region（override 优先）

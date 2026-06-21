@@ -221,6 +221,35 @@ def test_policy_put_rejects_bad():
     assert c.put("/api/policy", json={"routes": [{"to": "X", "geosite": ["a/b"]}]}).status_code == 400
 
 
+def test_policy_explicit_matchers_and_dns_in_full():
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    pol = {"routes": [{"name": "tailnet", "to": "DIRECT", "domain_suffix": ["ts.net"],
+                       "ip_cidr": ["123.57.92.37/32"], "process_name": ["ssh"], "dst_port": ["22"]}],
+           "final": "PROXY", "dns": {"nameserver_policy": {"+.ts.net": "100.100.100.100"}}}
+    assert c.put("/api/policy", json=pol).status_code == 200
+    token = c.get("/api/sub-token").json()["token"]
+    cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token, "full": 1}).text)
+    assert "DOMAIN-SUFFIX,ts.net,DIRECT" in cfg["rules"] and "PROCESS-NAME,ssh,DIRECT" in cfg["rules"]
+    assert cfg["dns"]["nameserver-policy"] == {"+.ts.net": "100.100.100.100"}
+    assert "123.57.92.37/32" in cfg["tun"]["route-exclude-address"]
+
+
+def test_policy_rejects_bad_matchers():
+    c = _client()
+    assert c.put("/api/policy", json={"routes": [{"to": "DIRECT", "domain_suffix": ["a,b"]}]}).status_code == 400
+    assert c.put("/api/policy", json={"routes": [{"to": "DIRECT", "ip_cidr": ["notacidr"]}]}).status_code == 400
+    assert c.put("/api/policy", json={"routes": [{"to": "DIRECT", "dst_port": ["99999"]}]}).status_code == 400
+    assert c.put("/api/policy", json={"routes": [{"to": "DIRECT", "dst_port": ["443-80"]}]}).status_code == 400  # start>end
+
+
+def test_ip_cidr_normalized():
+    c = _client()
+    c.put("/api/policy", json={"routes": [{"to": "DIRECT", "ip_cidr": ["1.2.3.4"]}], "final": "PROXY"})
+    assert c.get("/api/policy").json()["policy"]["routes"][0]["ip_cidr"] == ["1.2.3.4/32"]  # 单 IP→/32
+
+
 def test_categories_and_allowlist():
     c = _client()
     cats = c.get("/api/categories").json()
