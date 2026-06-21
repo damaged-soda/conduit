@@ -203,6 +203,16 @@ def test_sub_clash_empty_is_valid_all_direct():
     assert cfg["rules"] == ["MATCH,DIRECT"]  # 无节点 → 合法的全直连配置
 
 
+def test_ruleset_inspect():
+    fake = "# comment\ndomain:openai.com\n+.anthropic.com\nclaude.ai\n"
+    c = TestClient(create_app(":memory:", fetcher=lambda url: fake))
+    r = c.get("/api/ruleset", params={"kind": "ruleset", "name": "ai"}).json()
+    assert r["count"] == 3 and "domain:openai.com" in r["sample"]  # 跳过注释
+    assert c.get("/api/ruleset", params={"kind": "ruleset", "name": "../x"}).status_code == 400  # 路径穿越
+    assert c.get("/api/ruleset", params={"kind": "ruleset", "name": "nope"}).status_code == 404
+    assert c.get("/api/ruleset", params={"kind": "geosite", "name": "cn"}).json()["count"] == 3
+
+
 def test_policy_endpoint_exposes_rules():
     c = _client()
     r = c.get("/api/policy").json()

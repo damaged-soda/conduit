@@ -10,6 +10,7 @@ TODO：tag、render+pull、定时刷新、认证、secret 加密。
 from __future__ import annotations
 
 import os
+import re
 import secrets
 from typing import Callable
 
@@ -46,6 +47,10 @@ class ImportIn(BaseModel):
 class TagIn(BaseModel):
     region: str | None = None  # 留空=清除覆盖（用自动 region）
     quarantined: bool | None = None
+
+
+_MRS_BASE = "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo"
+_RULESET_NAME = re.compile(r"^[A-Za-z0-9_!.-]+$")  # 防 ../ 路径穿越
 
 
 def _check_url(url: str | None) -> None:
@@ -149,6 +154,27 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
     def get_policy():
         # 规则面（版本管理在仓库 conduit/policy.py）；页面只读展示，改规则编辑仓库重部署。
         return {"policy": DEFAULT_POLICY, "rules": subscription_rules({}, DEFAULT_POLICY)}
+
+    @app.get("/api/ruleset")
+    def inspect_ruleset(kind: str, name: str):
+        # 看某个类别/规则集里到底匹配什么（拉 MetaCubeX 可读 .list；服务侧抓取）。
+        if not _RULESET_NAME.match(name or ""):
+            raise HTTPException(400, "非法名字")
+        if kind == "ruleset":
+            spec = DEFAULT_POLICY.get("rule_providers", {}).get(name)
+            if not spec:
+                raise HTTPException(404, "未知规则集")
+            url = spec["url"][:-4] + ".list" if spec["url"].endswith(".mrs") else spec["url"]
+        elif kind in ("geosite", "geoip"):
+            url = f"{_MRS_BASE}/{kind}/{name.lower()}.list"
+        else:
+            raise HTTPException(400, "kind 只能是 geosite/geoip/ruleset")
+        try:
+            text = fetcher(url)
+        except Exception:
+            raise HTTPException(502, "拉取规则集失败")
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
+        return {"name": name, "count": len(lines), "sample": lines[:80], "url": url}
 
     @app.get("/sub/clash")
     def sub_clash(token: str = "", full: bool = False):
@@ -315,20 +341,27 @@ async function loadSub(){
 async function loadPolicy(){
   const {policy,rules}=await j('/api/policy');
   const out=document.createElement('div');
-  out.append(el('div','分流规则（匹配 → 目标组；按从上到下首命中。改规则编辑仓库 conduit/policy.py）'));
-  const tbl=document.createElement('table');tbl.style.cssText='max-width:620px;font-size:12px';
-  const head=document.createElement('tr');['匹配','类别/来源','目标'].forEach(h=>head.append(el('th',h)));tbl.append(head);
-  const row=(name,cats,to)=>{const tr=document.createElement('tr');
+  out.append(el('div','分流规则（匹配 → 目标组；从上到下首命中。点类别看里面匹配什么。改规则编辑仓库 conduit/policy.py）'));
+  const tbl=document.createElement('table');tbl.style.cssText='max-width:660px;font-size:12px';
+  const head=document.createElement('tr');['匹配','类别（点开看内容）','目标'].forEach(h=>head.append(el('th',h)));tbl.append(head);
+  const insp=document.createElement('div');insp.className='muted';insp.style.cssText='margin-top:6px;font-size:11px;word-break:break-all';
+  const chip=(kind,nm)=>{const a=document.createElement('a');a.href='#';a.textContent=(kind==='ruleset'?'规则集:':kind+':')+nm;a.style.marginRight='10px';
+    a.onclick=async(e)=>{e.preventDefault();insp.textContent='加载 '+nm+' …';
+      try{const d=await j('/api/ruleset?kind='+kind+'&name='+encodeURIComponent(nm));
+        insp.replaceChildren(el('b',`${nm}：${d.count} 条匹配`),el('span','　'+d.sample.slice(0,50).join('   ')));
+      }catch(err){insp.textContent=nm+' 看不了：'+err.message}};
+    return a;};
+  const row=(name,catEls,to)=>{const tr=document.createElement('tr');
     const c1=el('td',name);c1.style.fontWeight='600';
-    const c2=el('td',cats);c2.className='muted';
+    const c2=document.createElement('td');catEls.forEach(e=>c2.append(e));
     tr.append(c1,c2,el('td','→ '+to));tbl.append(tr)};
-  row('私网 / tailnet','rule#0 内置兜底','DIRECT');
+  row('私网 / tailnet',[el('span','rule#0 内置兜底')],'DIRECT');
   (policy.routes||[]).forEach(r=>{
-    const cats=[...(r.geosite||[]).map(x=>'geosite:'+x),...(r.geoip||[]).map(x=>'geoip:'+x),...(r.rule_set||[]).map(x=>'规则集:'+x)].join(' · ');
-    row(r.name||'(规则)',cats,r.to);
+    const cs=[...(r.geosite||[]).map(x=>chip('geosite',x)),...(r.geoip||[]).map(x=>chip('geoip',x)),...(r.rule_set||[]).map(x=>chip('ruleset',x))];
+    row(r.name||'(规则)',cs,r.to);
   });
-  row('其余','兜底 MATCH',policy.final||'PROXY');
-  out.append(tbl);
+  row('其余',[el('span','兜底 MATCH')],policy.final||'PROXY');
+  out.append(tbl,insp);
   const det=document.createElement('details');
   const sm=document.createElement('summary');sm.textContent=`查看生成的 ${rules.length} 条 mihomo 规则`;det.append(sm);
   const ul=document.createElement('ul');ul.style.cssText='margin:4px 0;padding-left:18px;font-size:11px';
