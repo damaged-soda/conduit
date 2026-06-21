@@ -33,7 +33,8 @@ out=$(texec curl -s --max-time 8 -x http://mihomo:7890 http://172.28.0.5:5678) \
 echo "$out" | grep -q direct || fail "私网目标返回异常：$out"
 
 echo "== 故障切换：kill 当前选中的 upstream，断言选中真的切换 + 仍通 =="
-sel() { texec curl -s http://mihomo:9090/proxies/PROXY | "${PYTHON:-python3}" -c "import sys,json;print(json.load(sys.stdin)['now'])"; }
+# PROXY 是 select(默认→AUTO)，实际选节点的是 AUTO(fallback) 组 → 读 AUTO.now
+sel() { texec curl -s http://mihomo:9090/proxies/AUTO | "${PYTHON:-python3}" -c "import sys,json;print(json.load(sys.stdin)['now'])"; }
 now=$(sel); echo "切换前选中：$now"
 compose stop "$now" >/dev/null
 sleep 12   # > health-check interval(10s)，让 mihomo 标记其不健康

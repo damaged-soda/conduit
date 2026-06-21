@@ -23,6 +23,7 @@ import hashlib
 import yaml
 
 from .models import Node
+from .tags import region_of
 
 _HEALTH_URL = "http://www.gstatic.com/generate_204"
 
@@ -42,20 +43,38 @@ def _short(aid_value: str) -> str:
     return hashlib.sha1(aid_value.encode()).hexdigest()[:6]
 
 
-def _assign_names(nodes: list[Node]) -> list[str]:
-    """给每个节点一个去重、且不撞保留名/group 名的 proxy 名。v1 用 raw_name(+access_id 短哈希)。"""
+def _assign_names(nodes: list[Node], extra_reserved: set[str] = frozenset()) -> list[str]:
+    """给每个节点一个去重、且不撞保留名/group 名的 proxy 名。v1 用 raw_name(+access_id 短哈希)。
+
+    extra_reserved：额外要避开的名字（如动态生成的地区组名 / AUTO），防 proxy 名撞组名。
+    """
+    reserved = _RESERVED_NAMES | set(extra_reserved)
     used: set[str] = set()
     out: list[str] = []
     for n in nodes:
         base = n.raw_name or "node"
-        name = base if base not in used and base not in _RESERVED_NAMES else f"{base}-{_short(n.access_id.value)}"
+        name = base if base not in used and base not in reserved else f"{base}-{_short(n.access_id.value)}"
         i = 2
-        while name in used or name in _RESERVED_NAMES:
+        while name in used or name in reserved:
             name = f"{base}-{_short(n.access_id.value)}-{i}"
             i += 1
         used.add(name)
         out.append(name)
     return out
+
+
+def _fallback_group(name: str, proxies: list[str]) -> dict:
+    """一个 fallback 组（用首个存活节点，仅故障时切换 → 人无感，目标 #3）。"""
+    return {
+        "name": name,
+        "type": "fallback",
+        "proxies": proxies,
+        "url": _HEALTH_URL,
+        "interval": 60,
+        "timeout": 2000,
+        "lazy": False,
+        "expected-status": "204",
+    }
 
 
 def _node_to_proxy(n: Node, name: str) -> dict:
@@ -161,13 +180,21 @@ def render(nodes: list[Node], target: str, direct_list: dict, overlay: dict) -> 
     return yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True)
 
 
-def build_subscription(nodes: list[Node], direct: dict, full: bool = False) -> dict:
-    """订阅用配置：标准 clash 骨架 + proxies + PROXY 组 + 规则；`full=True` 再加 dns(fake-ip) + tun。
+def build_subscription(nodes: list[Node], direct: dict, full: bool = False, tags: dict | None = None) -> dict:
+    """订阅用配置：标准 clash 骨架 + 按 region 分组的 proxy-groups + 规则；`full=True` 再加 dns+tun。
 
     必须带标准顶层骨架（port/mode/log-level…）：clash-verge 等 GUI 的导入校验会**静默拒绝**只有
-    proxies/groups/rules 的配置（mihomo 内核宽容能跑，但 GUI 更严）。客户端通常用自己的实例设置
-    覆盖端口/controller。external-controller 不放进来（客户端自管 + 安全）。
+    proxies/groups/rules 的配置。external-controller 不放进来（客户端自管 + 安全）。
+
+    分组结构（地区分组 + 顶层选择）：
+      - `PROXY` (select)：顶层手动选 [AUTO, <各地区>]，默认 AUTO；规则只引用组名。
+      - `AUTO` (fallback)：所有非隔离节点，全局故障转移。
+      - 每个 region 一个 fallback 组。
+
+    tags：`{access_id: {"region": override|None, "quarantined": bool}}`（service 传入）。隔离的剔除；
+    region 优先用 override，否则 `region_of(raw_name)`。标签按 access_id 存 → 跟着节点走，不跟订阅。
     """
+    tags = tags or {}
     cfg: dict = {
         "port": 7890,
         "socks-port": 7891,
@@ -195,28 +222,47 @@ def build_subscription(nodes: list[Node], direct: dict, full: bool = False) -> d
             "dns-hijack": ["any:53", "tcp://any:53"],
             "route-exclude-address": _BASELINE_DIRECT + list(direct.get("ip_cidr", [])),
         }
-    if nodes:
-        names = _assign_names(nodes)
-        cfg["proxies"] = [_node_to_proxy(n, nm) for n, nm in zip(nodes, names)]
-        cfg["proxy-groups"] = [
-            {
-                "name": "PROXY",
-                "type": "fallback",
-                "proxies": names,
-                "url": _HEALTH_URL,
-                "interval": 60,
-                "timeout": 2000,
-                "lazy": False,
-                "expected-status": "204",
-            }
-        ]
-        # 兜底私网/tailnet 直连在最前 → 调用方 direct-list → 其余走 PROXY
-        cfg["rules"] = _direct_rules({"ip_cidr": _BASELINE_DIRECT}) + _direct_rules(direct) + ["MATCH,PROXY"]
-    else:  # 无节点：给个合法的全直连配置，别产出坏订阅
+
+    # 剔除隔离节点 + 算每个节点的 region（override 优先）
+    active: list[tuple[Node, str]] = []
+    for n in nodes:
+        t = tags.get(n.access_id.value, {})
+        if t.get("quarantined"):
+            continue
+        region = (t.get("region") or "").strip() or region_of(n.raw_name)
+        active.append((n, region))
+
+    if not active:  # 无可用节点：给个合法的全直连配置，别产出坏订阅
         cfg["proxies"] = []
         cfg["rules"] = ["MATCH,DIRECT"]
+        return cfg
+
+    region_order: list[str] = []  # 按出现顺序，稳定
+    for _, r in active:
+        if r not in region_order:
+            region_order.append(r)
+
+    nodes_only = [n for n, _ in active]
+    names = _assign_names(nodes_only, extra_reserved={"AUTO", *region_order})
+    cfg["proxies"] = [_node_to_proxy(n, nm) for n, nm in zip(nodes_only, names)]
+
+    by_region: dict[str, list[str]] = {}
+    for (_, r), nm in zip(active, names):
+        by_region.setdefault(r, []).append(nm)
+
+    groups: list[dict] = [{"name": "PROXY", "type": "select", "proxies": ["AUTO", *region_order]}]
+    groups.append(_fallback_group("AUTO", names))
+    groups += [_fallback_group(r, by_region[r]) for r in region_order]
+    cfg["proxy-groups"] = groups
+
+    # 兜底私网/tailnet 直连在最前 → 调用方 direct-list → 其余走 PROXY（顶层 select）
+    cfg["rules"] = _direct_rules({"ip_cidr": _BASELINE_DIRECT}) + _direct_rules(direct) + ["MATCH,PROXY"]
     return cfg
 
 
-def render_subscription(nodes: list[Node], direct_list: dict, full: bool = False) -> str:
-    return yaml.safe_dump(build_subscription(nodes, direct_list, full), sort_keys=False, allow_unicode=True)
+def render_subscription(
+    nodes: list[Node], direct_list: dict, full: bool = False, tags: dict | None = None
+) -> str:
+    return yaml.safe_dump(
+        build_subscription(nodes, direct_list, full, tags), sort_keys=False, allow_unicode=True
+    )

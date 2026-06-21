@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from conduit.ingest import normalize
 from conduit.render import render_subscription
+from conduit.tags import normalize_region, region_of
 
 from .db import Store
 from .fetch import fetch_url
@@ -39,6 +40,11 @@ class SubPatch(BaseModel):
 
 class ImportIn(BaseModel):
     raw: str
+
+
+class TagIn(BaseModel):
+    region: str | None = None  # 留空=清除覆盖（用自动 region）
+    quarantined: bool | None = None
 
 
 def _check_url(url: str | None) -> None:
@@ -63,6 +69,17 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
         if not sub:
             raise HTTPException(404, f"未知 subscription: {sub_id}")
         return sub
+
+    def _with_region(rows: list[dict]) -> list[dict]:
+        """给节点行补上 region（自动 + 覆盖 + 生效）+ 隔离状态，供页面展示/打标。"""
+        tags = store.get_node_tags()
+        out = []
+        for n in rows:
+            t = tags.get(n["access_id"], {})
+            auto = region_of(n.get("raw_name", ""))
+            out.append({**n, "region_auto": auto, "region_override": t.get("region"),
+                        "region": t.get("region") or auto, "quarantined": t.get("quarantined", False)})
+        return out
 
     @app.post("/api/subscriptions")
     def add_subscription(body: SubIn):
@@ -89,7 +106,20 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
     @app.get("/api/subscriptions/{sub_id}/nodes")
     def subscription_nodes(sub_id: str):
         _require(sub_id)
-        return store.list_nodes(sub_id)
+        return _with_region(store.list_nodes(sub_id))
+
+    @app.put("/api/nodes/{access_id}/tag")
+    def set_node_tag(access_id: str, body: TagIn):
+        kwargs: dict = {}  # 只更新本次提供的字段（部分更新；未传的保持不变）
+        if "region" in body.model_fields_set:
+            try:
+                kwargs["region"] = normalize_region(body.region)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+        if "quarantined" in body.model_fields_set:
+            kwargs["quarantined"] = bool(body.quarantined)
+        store.set_node_tag(access_id, **kwargs)
+        return {"ok": True}
 
     @app.post("/api/subscriptions/{sub_id}/import")
     def import_subscription(sub_id: str, body: ImportIn):
@@ -108,7 +138,7 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
 
     @app.get("/api/nodes")
     def list_nodes():
-        return store.list_nodes()
+        return _with_region(store.list_nodes())
 
     @app.get("/api/sub-token")
     def sub_token():
@@ -119,7 +149,7 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
         # 订阅产物含明文节点凭据 → 必须 token（常量时间比较）。私网/tailnet 直连兜底在 render 内置。
         if not secrets.compare_digest(token, store.get_sub_token()):
             raise HTTPException(403, "bad token")
-        cfg = render_subscription(store.nodes_for_render(), {}, full=full)
+        cfg = render_subscription(store.nodes_for_render(), {}, full=full, tags=store.get_node_tags())
         # 标准订阅响应头：让 clash-verge/mihomo 当订阅文件处理（否则浏览器直接显示、客户端导入失败）。
         return Response(
             cfg,
@@ -220,12 +250,34 @@ async function renderDetail(){
         btn('🗑 删除订阅',async()=>{if(confirm('删除该订阅及其节点？')){await j(`/api/subscriptions/${SEL}`,{method:'DELETE'});SEL=null;await loadSubs();document.getElementById('detail').replaceChildren(el('p','已删除。'))}}),
         msg),
   );
+  const nbox=document.createElement('div');
+  d.append(el('h3','节点 / 标签'), nbox);
+  await loadNodes(nbox);
+}
+
+async function loadNodes(box){
   const nodes=await j(`/api/subscriptions/${SEL}/nodes`);
   const tbl=document.createElement('table');
-  const head=document.createElement('tr');['type','server','port','名'].forEach(h=>head.append(el('th',h)));
+  const head=document.createElement('tr');['名','region','隔离','类型','地址'].forEach(h=>head.append(el('th',h)));
   tbl.append(head);
-  nodes.forEach(n=>{const tr=document.createElement('tr');[n.type,n.server,n.port,n.raw_name].forEach(v=>tr.append(el('td',String(v))));tbl.append(tr)});
-  d.append(el('h3',`节点（${nodes.length}）`),tbl);
+  nodes.forEach(n=>{
+    const tr=document.createElement('tr');
+    if(n.quarantined)tr.style.opacity='0.4';
+    tr.append(el('td',n.raw_name));
+    const ri=input(n.region_auto,n.region_override||'');ri.style.width='60px';
+    ri.onchange=async()=>{await setTag(n.access_id,ri.value,n.quarantined);await loadNodes(box)};
+    const rtd=document.createElement('td');rtd.append(ri);tr.append(rtd);
+    const cb=document.createElement('input');cb.type='checkbox';cb.checked=!!n.quarantined;
+    cb.onchange=async()=>{await setTag(n.access_id,n.region_override,cb.checked);await loadNodes(box)};
+    const qtd=document.createElement('td');qtd.append(cb);tr.append(qtd);
+    tr.append(el('td',n.type),el('td',`${n.server}:${n.port}`));
+    tbl.append(tr);
+  });
+  const hint=el('div',`共 ${nodes.length} · region 留空=自动(占位符)/填了=覆盖；勾选=隔离(不进任何组)`);hint.className='muted';
+  box.replaceChildren(hint,tbl);
+}
+async function setTag(aid,region,quarantined){
+  await fetch('/api/nodes/'+encodeURIComponent(aid)+'/tag',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({region:region||null,quarantined:!!quarantined})});
 }
 
 async function patch(body){await j(`/api/subscriptions/${SEL}`,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify(body)});await loadSubs();await renderDetail();}

@@ -50,7 +50,14 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS node_tags (
+  access_id   TEXT PRIMARY KEY,
+  region      TEXT,
+  quarantined INTEGER NOT NULL DEFAULT 0
+);
 """
+
+_UNSET = object()  # set_node_tag 的「未提供」哨兵，支持部分更新
 
 
 class Store:
@@ -192,3 +199,28 @@ class Store:
                 )
             )
         return out
+
+    # ---- 标签（按 access_id，跟着节点走、不随订阅删除）----
+
+    def get_node_tags(self) -> dict[str, dict]:
+        """{access_id: {"region": override|None, "quarantined": bool}}，传给 render 分组。"""
+        with self._lock:
+            rows = self._conn.execute("SELECT access_id, region, quarantined FROM node_tags").fetchall()
+        return {r["access_id"]: {"region": r["region"], "quarantined": bool(r["quarantined"])} for r in rows}
+
+    def set_node_tag(self, access_id: str, region=_UNSET, quarantined=_UNSET) -> None:
+        """部分更新某节点的标签（region 覆盖 / 隔离）。未传的字段保持不变。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT region, quarantined FROM node_tags WHERE access_id = ?", (access_id,)
+            ).fetchone()
+            cur_region = row["region"] if row else None
+            cur_q = bool(row["quarantined"]) if row else False
+            new_region = cur_region if region is _UNSET else ((region or "").strip() or None)
+            new_q = cur_q if quarantined is _UNSET else bool(quarantined)
+            self._conn.execute(
+                "INSERT INTO node_tags(access_id, region, quarantined) VALUES (?, ?, ?) "
+                "ON CONFLICT(access_id) DO UPDATE SET region = excluded.region, quarantined = excluded.quarantined",
+                (access_id, new_region, 1 if new_q else 0),
+            )
+            self._conn.commit()
