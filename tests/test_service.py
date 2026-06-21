@@ -203,6 +203,43 @@ def test_sub_clash_empty_is_valid_all_direct():
     assert cfg["rules"] == ["MATCH,DIRECT"]  # 无节点 → 合法的全直连配置
 
 
+def test_policy_edit_and_reset():
+    c = _client()
+    assert c.get("/api/policy").json()["custom"] is False
+    pol = {"routes": [{"name": "测试", "to": "DIRECT", "geosite": ["cn"]}], "final": "PROXY"}
+    assert c.put("/api/policy", json=pol).status_code == 200
+    g = c.get("/api/policy").json()
+    assert g["custom"] is True and g["policy"]["routes"][0]["name"] == "测试"
+    assert "GEOSITE,cn,DIRECT" in g["rules"]
+    assert c.delete("/api/policy").status_code == 200
+    assert c.get("/api/policy").json()["custom"] is False  # 恢复默认
+
+
+def test_policy_put_rejects_bad():
+    c = _client()
+    assert c.put("/api/policy", json={"routes": [{"to": "X", "rule_set": ["nope"]}]}).status_code == 400
+    assert c.put("/api/policy", json={"routes": [{"to": "X", "geosite": ["a/b"]}]}).status_code == 400
+
+
+def test_policy_edit_reflects_in_sub():
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    c.put("/api/policy", json={"routes": [{"name": "国内直连", "to": "DIRECT", "geosite": ["cn"]}], "final": "PROXY"})
+    token = c.get("/api/sub-token").json()["token"]
+    cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
+    assert "GEOSITE,cn,DIRECT" in cfg["rules"]
+    assert not any(r.startswith("RULE-SET,ai") for r in cfg["rules"])  # 自定义策略不含默认 AI 路由
+
+
+def test_groups_endpoint():
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    t = c.get("/api/groups").json()["targets"]
+    assert {"DIRECT", "REJECT", "PROXY", "AUTO"} <= set(t)
+
+
 def test_ruleset_inspect():
     fake = "# comment\ndomain:openai.com\n+.anthropic.com\nclaude.ai\n"
     c = TestClient(create_app(":memory:", fetcher=lambda url: fake))

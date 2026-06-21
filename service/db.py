@@ -178,6 +178,25 @@ class Store:
             self._conn.commit()
             return token
 
+    def get_policy(self) -> dict | None:
+        """页面编辑的规则策略（DB 为准）；无则 None → 服务回落到仓库 DEFAULT_POLICY。"""
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM meta WHERE key = 'policy'").fetchone()
+        return json.loads(row["value"]) if row else None
+
+    def set_policy(self, policy: dict | None) -> None:
+        """存策略；policy=None 删除（恢复仓库默认）。"""
+        with self._lock:
+            if policy is None:
+                self._conn.execute("DELETE FROM meta WHERE key = 'policy'")
+            else:
+                self._conn.execute(
+                    "INSERT INTO meta(key, value) VALUES ('policy', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (json.dumps(policy),),
+                )
+            self._conn.commit()
+
     def nodes_for_render(self, sub_id: str | None = None) -> list[Node]:
         """取节点并重建成 Node（**含 params 凭据**，仅服务内部渲染订阅用，绝不经 API 暴露）。"""
         q = "SELECT access_id, sub_id, type, server, port, raw_name, params FROM nodes"

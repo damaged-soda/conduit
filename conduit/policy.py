@@ -47,7 +47,9 @@ def policy_rules(policy: dict, resolve=None) -> list[str]:
     for route in policy.get("routes", []):
         to = resolve(route["to"])
         for name in route.get("rule_set", []):
-            ipcidr = providers.get(name, {}).get("behavior") == "ipcidr"
+            if name not in providers:  # 编辑后可能引用未声明 provider → 跳过，别产坏配置
+                continue
+            ipcidr = providers[name].get("behavior") == "ipcidr"
             rules.append(f"RULE-SET,{name},{to}" + (",no-resolve" if ipcidr else ""))
         for site in route.get("geosite", []):
             rules.append(f"GEOSITE,{site},{to}")
