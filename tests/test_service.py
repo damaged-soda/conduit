@@ -203,6 +203,13 @@ def test_sub_clash_empty_is_valid_all_direct():
     assert cfg["rules"] == ["MATCH,DIRECT"]  # 无节点 → 合法的全直连配置
 
 
+def test_policy_endpoint_exposes_rules():
+    c = _client()
+    r = c.get("/api/policy").json()
+    assert "GEOSITE,cn,DIRECT" in r["rules"] and r["rules"][-1] == "MATCH,PROXY"
+    assert r["policy"]["final"] == "PROXY"
+
+
 def test_sub_clash_has_china_direct_rules():
     c = _client()
     sid = _mksub(c)

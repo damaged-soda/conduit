@@ -259,15 +259,22 @@ def build_subscription(
     groups += [_fallback_group(r, by_region[r]) for r in region_order]
     cfg["proxy-groups"] = groups
 
-    # 私网/tailnet 兜底直连(rule#0) → 调用方 direct-list → 策略(reject→direct) → MATCH,final
+    cfg["rules"] = subscription_rules(direct, policy)
+    return cfg
+
+
+def subscription_rules(direct: dict, policy: dict) -> list[str]:
+    """订阅的完整规则序：私网/tailnet 兜底(rule#0) → 调用方 direct-list → 策略(reject→direct) → MATCH,final。
+
+    规则不依赖具体节点（只依赖 direct-list + 策略），所以可单独给页面展示。
+    """
     final = policy.get("final", "PROXY")
-    cfg["rules"] = (
+    return (
         _direct_rules({"ip_cidr": _BASELINE_DIRECT})
         + _direct_rules(direct)
         + policy_rules(policy)
         + [f"MATCH,{final}"]
     )
-    return cfg
 
 
 def render_subscription(
