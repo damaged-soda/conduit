@@ -19,7 +19,8 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from conduit.ingest import normalize
-from conduit.render import render_subscription
+from conduit.policy import DEFAULT_POLICY
+from conduit.render import render_subscription, subscription_rules
 from conduit.tags import normalize_region, region_of
 
 from .db import Store
@@ -144,6 +145,11 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
     def sub_token():
         return {"token": store.get_sub_token()}
 
+    @app.get("/api/policy")
+    def get_policy():
+        # 规则面（版本管理在仓库 conduit/policy.py）；页面只读展示，改规则编辑仓库重部署。
+        return {"policy": DEFAULT_POLICY, "rules": subscription_rules({}, DEFAULT_POLICY)}
+
     @app.get("/sub/clash")
     def sub_clash(token: str = "", full: bool = False):
         # 订阅产物含明文节点凭据 → 必须 token（常量时间比较）。私网/tailnet 直连兜底在 render 内置。
@@ -192,6 +198,7 @@ summary{cursor:pointer;font-weight:600;font-size:13px;padding:5px 8px;user-selec
 <body>
 <h1>conduit</h1>
 <div id="sub" class="muted" style="margin-bottom:1rem"></div>
+<div id="policy" class="muted" style="margin-bottom:1rem"></div>
 <div class="wrap">
   <div class="left">
     <button onclick="newSub()">＋ 新建订阅</button>
@@ -305,7 +312,16 @@ async function loadSub(){
     el('div','clash 订阅（导入 clash-verge / mihomo）：'), el('code',base),
     el('div','带 DNS/TUN：'), el('code',base+'&full=1'));
 }
-loadSubs(); loadSub();
+async function loadPolicy(){
+  const {rules}=await j('/api/policy');
+  const det=document.createElement('details');
+  const sm=document.createElement('summary');sm.textContent=`分流规则 · ${rules.length} 条（China-direct/广告拦/兜底；改规则编辑仓库 conduit/policy.py）`;det.append(sm);
+  const ul=document.createElement('ul');ul.style.cssText='margin:4px 0;padding-left:18px;font-size:11px';
+  rules.forEach(r=>{const li=document.createElement('li');li.textContent=r;ul.append(li)});
+  det.append(ul);
+  document.getElementById('policy').replaceChildren(det);
+}
+loadSubs(); loadSub(); loadPolicy();
 </script>
 </body></html>
 """
