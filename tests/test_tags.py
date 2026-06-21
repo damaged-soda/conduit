@@ -40,6 +40,14 @@ def test_flag_emoji_decode():
     assert region_of("🇹🇼 台北") == "TW"
 
 
+def test_text_beats_flag_on_mismatch():
+    # 机场常把台湾标 🇨🇳；文本「Taiwan」应胜出 → TW，不是 CN
+    assert region_of("🇨🇳 Taiwan | 06") == "TW"
+    assert region_of("🇭🇰 Hong Kong | 01") == "HK"
+    assert region_of("🇨🇳 中国 回国") == "CN"  # 文本也是中国 → CN
+    assert region_of("🇮🇹 Italy | 01") == "IT"  # 无关键词 → 旗帜兜底
+
+
 def test_keyword_fallback_no_flag():
     assert region_of("Hong Kong 01") == "HK"
     assert region_of("日本 IEPL 专线") == "JP"
