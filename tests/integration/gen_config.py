@@ -26,7 +26,12 @@ def _node(name: str, server: str) -> Node:
 
 def main() -> None:
     # proxy 名 = compose 服务名，故障切换断言可直接 `compose stop <选中节点>`
-    cfg = build_subscription([_node("upstream-a", "upstream-a"), _node("upstream-b", "upstream-b")], {}, full=False)
+    # 无-geo 策略：隔离网无公网，跑不了 geosite/geoip 库。本集成测试只验结构化路由(私网/域名/切换)，
+    # 不验 geo 规则（geo 由 golden + mihomo -t 验）。
+    nogeo = {"final": "PROXY"}
+    cfg = build_subscription(
+        [_node("upstream-a", "upstream-a"), _node("upstream-b", "upstream-b")], {}, full=False, policy=nogeo
+    )
     # 模拟客户端实例设置；放在 base 之后 update，确保覆盖 build_subscription 的骨架默认
     # （尤其 allow-lan: False → True，否则 mihomo 不绑 0.0.0.0、tester 够不到）+ 暴露 controller
     cfg.update({
