@@ -241,6 +241,13 @@ def test_policy_rejects_bad_matchers():
     assert c.put("/api/policy", json={"routes": [{"to": "DIRECT", "domain_suffix": ["a,b"]}]}).status_code == 400
     assert c.put("/api/policy", json={"routes": [{"to": "DIRECT", "ip_cidr": ["notacidr"]}]}).status_code == 400
     assert c.put("/api/policy", json={"routes": [{"to": "DIRECT", "dst_port": ["99999"]}]}).status_code == 400
+    assert c.put("/api/policy", json={"routes": [{"to": "DIRECT", "dst_port": ["443-80"]}]}).status_code == 400  # start>end
+
+
+def test_ip_cidr_normalized():
+    c = _client()
+    c.put("/api/policy", json={"routes": [{"to": "DIRECT", "ip_cidr": ["1.2.3.4"]}], "final": "PROXY"})
+    assert c.get("/api/policy").json()["policy"]["routes"][0]["ip_cidr"] == ["1.2.3.4/32"]  # 单 IP→/32
 
 
 def test_categories_and_allowlist():

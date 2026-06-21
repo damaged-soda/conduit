@@ -81,16 +81,21 @@ def _validate_matchers(r) -> None:
     for d in [*r.domain_suffix, *r.domain]:
         if not _DOMAINPAT.fullmatch(d):
             raise HTTPException(400, f"非法域名：{d}")
+    norm = []
     for c in r.ip_cidr:
         try:
-            ipaddress.ip_network(c, strict=False)
+            norm.append(str(ipaddress.ip_network(c, strict=False)))  # 规范化：单 IP → /32，避免不确定的 IP-CIDR
         except ValueError:
             raise HTTPException(400, f"非法 IP/CIDR：{c}")
+    r.ip_cidr = norm
     for p in r.process_name:
         if not _PLAINVAL.fullmatch(p):
             raise HTTPException(400, f"非法进程名：{p}")
     for p in r.dst_port:
-        if not _PORTPAT.fullmatch(p) or any(int(x) > 65535 for x in p.split("-")):
+        if not _PORTPAT.fullmatch(p):
+            raise HTTPException(400, f"非法端口：{p}")
+        parts = [int(x) for x in p.split("-")]
+        if any(x > 65535 for x in parts) or (len(parts) == 2 and parts[0] > parts[1]):
             raise HTTPException(400, f"非法端口：{p}")
 
 
