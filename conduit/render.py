@@ -259,22 +259,23 @@ def build_subscription(
     groups += [_fallback_group(r, by_region[r]) for r in region_order]
     cfg["proxy-groups"] = groups
 
-    # rule-providers（被 routes 引用的 .mrs）；指向「当前不存在的组」的 route 落到 final，保证配置合法
-    final = policy.get("final", "PROXY")
+    # rule-providers（被 routes 引用的 .mrs）；指向「当前不存在的组」的 route / final 落到 PROXY，保证合法
     valid = {"DIRECT", "REJECT", "PROXY", "AUTO", *region_order}
     providers = rule_providers_block(policy)
     if providers:
         cfg["rule-providers"] = providers
-    cfg["rules"] = subscription_rules(direct, policy, lambda to: to if to in valid else final)
+    cfg["rules"] = subscription_rules(direct, policy, lambda to: to if to in valid else "PROXY")
     return cfg
 
 
 def subscription_rules(direct: dict, policy: dict, resolve=None) -> list[str]:
     """订阅的完整规则序：私网/tailnet 兜底(rule#0) → 调用方 direct-list → 策略路由 → MATCH,final。
 
-    规则不依赖具体节点（只依赖 direct-list + 策略），可单独给页面展示。resolve 见 policy_rules。
+    规则不依赖具体节点（只依赖 direct-list + 策略），可单独给页面展示。resolve（render 传入）把指向
+    不存在组的 route / final 落到 PROXY；默认 identity（页面只读视图展示意图目标）。
     """
-    final = policy.get("final", "PROXY")
+    resolve = resolve or (lambda to: to)
+    final = resolve(policy.get("final", "PROXY"))
     return (
         _direct_rules({"ip_cidr": _BASELINE_DIRECT})
         + _direct_rules(direct)

@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from conduit.ingest import normalize
-from conduit.policy import DEFAULT_POLICY
+from conduit.policy import DEFAULT_POLICY, GEOIP_CATALOG, GEOSITE_CATALOG
 from conduit.render import render_subscription, subscription_rules
 from conduit.tags import normalize_region, region_of
 
@@ -47,6 +47,19 @@ class ImportIn(BaseModel):
 class TagIn(BaseModel):
     region: str | None = None  # 留空=清除覆盖（用自动 region）
     quarantined: bool | None = None
+
+
+class RouteIn(BaseModel):
+    name: str = ""
+    to: str
+    geosite: list[str] = []
+    geoip: list[str] = []
+    rule_set: list[str] = []
+
+
+class PolicyIn(BaseModel):
+    routes: list[RouteIn] = []
+    final: str = "PROXY"
 
 
 _MRS_BASE = "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo"
@@ -150,10 +163,66 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
     def sub_token():
         return {"token": store.get_sub_token()}
 
+    def _policy() -> dict:
+        # DB 为准；无则回落仓库 DEFAULT。rule_providers 始终服务端控制（不让 PUT 注入任意 URL，防 SSRF）。
+        stored = store.get_policy()
+        if not stored:
+            return DEFAULT_POLICY
+        return {
+            "rule_providers": DEFAULT_POLICY.get("rule_providers", {}),
+            "routes": stored.get("routes", []),
+            "final": stored.get("final", "PROXY"),
+        }
+
+    def _groups() -> list[str]:
+        tags = store.get_node_tags()
+        regions: list[str] = []
+        for n in store.nodes_for_render():
+            t = tags.get(n.access_id.value, {})
+            if t.get("quarantined"):
+                continue
+            reg = (t.get("region") or "").strip() or region_of(n.raw_name)
+            if reg not in regions:
+                regions.append(reg)
+        return ["DIRECT", "REJECT", "PROXY", "AUTO", *sorted(regions)]
+
     @app.get("/api/policy")
     def get_policy():
-        # 规则面（版本管理在仓库 conduit/policy.py）；页面只读展示，改规则编辑仓库重部署。
-        return {"policy": DEFAULT_POLICY, "rules": subscription_rules({}, DEFAULT_POLICY)}
+        pol = _policy()
+        return {"policy": pol, "rules": subscription_rules({}, pol), "custom": store.get_policy() is not None}
+
+    @app.get("/api/groups")
+    def list_groups():
+        return {"targets": _groups()}
+
+    @app.get("/api/categories")
+    def list_categories():
+        # 编辑器从这里取可选类别（白名单 → 防写出加载失败的坏类别）。
+        return {"geosite": GEOSITE_CATALOG, "geoip": GEOIP_CATALOG, "rule_set": list(DEFAULT_POLICY.get("rule_providers", {}))}
+
+    @app.put("/api/policy")
+    def put_policy(body: PolicyIn):
+        if len(body.routes) > 100:
+            raise HTTPException(400, "routes 过多")
+        valid_rs = set(DEFAULT_POLICY.get("rule_providers", {}))
+        # 服务端白名单校验（前端预检不是安全边界，API 直调也得挡住坏类别）
+        for r in body.routes:
+            for cat in r.geosite:
+                if cat not in GEOSITE_CATALOG:
+                    raise HTTPException(400, f"未知 geosite 类别：{cat}")
+            for cat in r.geoip:
+                if cat not in GEOIP_CATALOG:
+                    raise HTTPException(400, f"未知 geoip 类别：{cat}")
+            for rs in r.rule_set:
+                if rs not in valid_rs:
+                    raise HTTPException(400, f"未知规则集：{rs}（仅支持 {sorted(valid_rs)}）")
+        store.set_policy({"routes": [r.model_dump() for r in body.routes], "final": body.final})
+        return {"ok": True}
+
+    @app.delete("/api/policy")
+    def reset_policy():
+        store.set_policy(None)  # 恢复仓库默认
+        return {"ok": True}
 
     @app.get("/api/ruleset")
     def inspect_ruleset(kind: str, name: str):
@@ -181,7 +250,9 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
         # 订阅产物含明文节点凭据 → 必须 token（常量时间比较）。私网/tailnet 直连兜底在 render 内置。
         if not secrets.compare_digest(token, store.get_sub_token()):
             raise HTTPException(403, "bad token")
-        cfg = render_subscription(store.nodes_for_render(), {}, full=full, tags=store.get_node_tags())
+        cfg = render_subscription(
+            store.nodes_for_render(), {}, full=full, tags=store.get_node_tags(), policy=_policy()
+        )
         # 标准订阅响应头：让 clash-verge/mihomo 当订阅文件处理（否则浏览器直接显示、客户端导入失败）。
         return Response(
             cfg,
@@ -338,36 +409,69 @@ async function loadSub(){
     el('div','clash 订阅（导入 clash-verge / mihomo）：'), el('code',base),
     el('div','带 DNS/TUN：'), el('code',base+'&full=1'));
 }
+let POL=null, TARGETS=[], CATS={}, CUSTOM=false, EDIT=false, RULES=[];
 async function loadPolicy(){
-  const {policy,rules}=await j('/api/policy');
+  const d=await j('/api/policy');
+  POL={routes:JSON.parse(JSON.stringify(d.policy.routes||[])),final:d.policy.final||'PROXY'};
+  CUSTOM=d.custom;RULES=d.rules;EDIT=false;
+  try{TARGETS=(await j('/api/groups')).targets}catch(e){TARGETS=['DIRECT','REJECT','PROXY','AUTO']}
+  try{CATS=await j('/api/categories')}catch(e){CATS={geosite:[],geoip:[],rule_set:[]}}
+  renderPolicy();
+}
+function targetSel(val,fn){const s=document.createElement('select');const opts=TARGETS.slice();if(opts.indexOf(val)<0)opts.push(val);
+  opts.forEach(t=>{const o=document.createElement('option');o.value=o.textContent=t;s.append(o)});s.value=val;s.onchange=()=>fn(s.value);return s}
+function renderPolicy(){
+  const box=document.getElementById('policy');box.replaceChildren();
+  const hdr=document.createElement('div');hdr.append(el('b','分流规则'),el('span',CUSTOM?'（已自定义，存于服务）':'（仓库默认）'),' ');
+  hdr.append(btn(EDIT?'✕ 取消':'✎ 编辑',()=>{if(EDIT)loadPolicy();else{EDIT=true;renderPolicy()}}));
+  box.append(hdr,EDIT?editorView():readonlyView());
+}
+function readonlyView(){
   const out=document.createElement('div');
-  out.append(el('div','分流规则（匹配 → 目标组；从上到下首命中。点类别看里面匹配什么。改规则编辑仓库 conduit/policy.py）'));
+  out.append(el('div','匹配 → 目标组；从上到下首命中。点类别看里面匹配什么。'));
   const tbl=document.createElement('table');tbl.style.cssText='max-width:660px;font-size:12px';
-  const head=document.createElement('tr');['匹配','类别（点开看内容）','目标'].forEach(h=>head.append(el('th',h)));tbl.append(head);
   const insp=document.createElement('div');insp.className='muted';insp.style.cssText='margin-top:6px;font-size:11px;word-break:break-all';
-  const chip=(kind,nm)=>{const a=document.createElement('a');a.href='#';a.textContent=(kind==='ruleset'?'规则集:':kind+':')+nm;a.style.marginRight='10px';
-    a.onclick=async(e)=>{e.preventDefault();insp.textContent='加载 '+nm+' …';
-      try{const d=await j('/api/ruleset?kind='+kind+'&name='+encodeURIComponent(nm));
-        insp.replaceChildren(el('b',`${nm}：${d.count} 条匹配`),el('span','　'+d.sample.slice(0,50).join('   ')));
-      }catch(err){insp.textContent=nm+' 看不了：'+err.message}};
-    return a;};
-  const row=(name,catEls,to)=>{const tr=document.createElement('tr');
-    const c1=el('td',name);c1.style.fontWeight='600';
-    const c2=document.createElement('td');catEls.forEach(e=>c2.append(e));
-    tr.append(c1,c2,el('td','→ '+to));tbl.append(tr)};
-  row('私网 / tailnet',[el('span','rule#0 内置兜底')],'DIRECT');
-  (policy.routes||[]).forEach(r=>{
-    const cs=[...(r.geosite||[]).map(x=>chip('geosite',x)),...(r.geoip||[]).map(x=>chip('geoip',x)),...(r.rule_set||[]).map(x=>chip('ruleset',x))];
-    row(r.name||'(规则)',cs,r.to);
-  });
-  row('其余',[el('span','兜底 MATCH')],policy.final||'PROXY');
+  const chip=(kind,nm)=>{const a=document.createElement('a');a.href='#';a.textContent=(kind==='rule_set'?'规则集:':kind+':')+nm;a.style.marginRight='10px';
+    a.onclick=async(e)=>{e.preventDefault();insp.textContent='加载 '+nm+' …';try{const d=await j('/api/ruleset?kind='+(kind==='rule_set'?'ruleset':kind)+'&name='+encodeURIComponent(nm));insp.replaceChildren(el('b',nm+'：'+d.count+' 条匹配'),el('span','　'+d.sample.slice(0,50).join('   ')))}catch(e2){insp.textContent=nm+' 看不了：'+e2.message}};return a};
+  const row3=(nm,cs,to)=>{const tr=document.createElement('tr');const c1=el('td',nm);c1.style.fontWeight='600';const c2=document.createElement('td');cs.forEach(e=>c2.append(e));tr.append(c1,c2,el('td','→ '+to));tbl.append(tr)};
+  row3('私网 / tailnet',[el('span','rule#0 兜底')],'DIRECT');
+  POL.routes.forEach(r=>row3(r.name||'(规则)',['geosite','geoip','rule_set'].flatMap(k=>(r[k]||[]).map(x=>chip(k,x))),r.to));
+  row3('其余',[el('span','兜底 MATCH')],POL.final);
   out.append(tbl,insp);
-  const det=document.createElement('details');
-  const sm=document.createElement('summary');sm.textContent=`查看生成的 ${rules.length} 条 mihomo 规则`;det.append(sm);
-  const ul=document.createElement('ul');ul.style.cssText='margin:4px 0;padding-left:18px;font-size:11px';
-  rules.forEach(r=>{const li=document.createElement('li');li.textContent=r;ul.append(li)});
-  det.append(ul);out.append(det);
-  document.getElementById('policy').replaceChildren(out);
+  const det=document.createElement('details');const sm=document.createElement('summary');sm.textContent='查看生成的 '+RULES.length+' 条 mihomo 规则';det.append(sm);
+  const ul=document.createElement('ul');ul.style.cssText='margin:4px 0;padding-left:18px;font-size:11px';RULES.forEach(r=>{const li=document.createElement('li');li.textContent=r;ul.append(li)});det.append(ul);out.append(det);
+  return out;
+}
+function editorView(){
+  const out=document.createElement('div');
+  out.append(el('div','每条 = 一组匹配 → 目标；顺序即优先级（↑↓ 调）。改完点保存。'));
+  POL.routes.forEach((r,i)=>out.append(routeEditor(r,i)));
+  out.append(row(btn('＋ 添加规则',()=>{POL.routes.push({name:'',to:'PROXY',geosite:[],geoip:[],rule_set:[]});renderPolicy()})));
+  out.append(row(el('span','其余（兜底）→ '),targetSel(POL.final,v=>POL.final=v)));
+  const save=btn('保存',async()=>{try{const r=await fetch('/api/policy',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(POL)});if(!r.ok)throw new Error((await r.json()).detail||r.status);await loadPolicy()}catch(e){alert('保存失败: '+e.message)}});
+  const reset=btn('恢复默认',async()=>{if(confirm('恢复仓库默认策略？')){await fetch('/api/policy',{method:'DELETE'});await loadPolicy()}});
+  out.append(row(save,reset));
+  return out;
+}
+function routeEditor(r,i){
+  const d=document.createElement('div');d.style.cssText='border:1px solid #ddd;border-radius:6px;padding:6px;margin:5px 0';
+  const nm=input('规则名',r.name);nm.style.width='110px';nm.onchange=()=>r.name=nm.value;
+  const up=btn('↑',()=>{if(i>0){const t=POL.routes[i-1];POL.routes[i-1]=POL.routes[i];POL.routes[i]=t;renderPolicy()}});
+  const dn=btn('↓',()=>{if(i<POL.routes.length-1){const t=POL.routes[i+1];POL.routes[i+1]=POL.routes[i];POL.routes[i]=t;renderPolicy()}});
+  const del=btn('✕ 删',()=>{POL.routes.splice(i,1);renderPolicy()});
+  d.append(row(el('b','#'+(i+1)),nm,el('span','→'),targetSel(r.to,v=>r.to=v),up,dn,del));
+  const mbox=document.createElement('div');mbox.style.cssText='margin:4px 0';
+  ['geosite','geoip','rule_set'].forEach(k=>(r[k]||[]).forEach((n,idx)=>{
+    const s=document.createElement('span');s.style.cssText='display:inline-block;border:1px solid #bbb;border-radius:10px;padding:1px 4px 1px 8px;margin:2px;font-size:11px';
+    s.append(el('span',(k==='rule_set'?'规则集:':k+':')+n));s.append(btn('×',()=>{r[k].splice(idx,1);renderPolicy()}));mbox.append(s)}));
+  d.append(mbox);
+  const ks=document.createElement('select');[['geosite','域名类别'],['geoip','IP国家/集'],['rule_set','规则集']].forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;ks.append(o)});
+  const nv=document.createElement('select');
+  const fillNames=()=>{nv.replaceChildren();(CATS[ks.value]||[]).forEach(n=>{const o=document.createElement('option');o.value=o.textContent=n;nv.append(o)})};
+  ks.onchange=fillNames;fillNames();
+  const add=btn('＋匹配',()=>{const k=ks.value,name=nv.value;if(!name)return;r[k]=r[k]||[];if(r[k].indexOf(name)<0)r[k].push(name);renderPolicy()});
+  d.append(row(el('span','加匹配:'),ks,nv,add));
+  return d;
 }
 loadSubs(); loadSub(); loadPolicy();
 </script>

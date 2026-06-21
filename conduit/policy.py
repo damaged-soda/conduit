@@ -15,6 +15,17 @@ from __future__ import annotations
 
 _MRS = "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo"
 
+# 类别白名单（已核实存在于 MetaCubeX/meta-rules-dat）：页面编辑只允许这些，防写出加载失败的坏类别。
+GEOSITE_CATALOG = [
+    "cn", "category-ads-all", "geolocation-!cn", "netflix", "disney", "youtube", "spotify", "tiktok",
+    "hbo", "bahamut", "category-ai-!cn", "openai", "anthropic", "telegram", "apple", "microsoft",
+    "google", "github", "twitter", "discord", "paypal", "steam", "bilibili", "category-games", "category-porn",
+]
+GEOIP_CATALOG = [
+    "CN", "US", "HK", "JP", "SG", "TW", "KR", "private", "telegram", "google",
+    "netflix", "twitter", "fastly", "cloudflare", "facebook",
+]
+
 # v1 默认策略。改这里就改全局分流。
 DEFAULT_POLICY: dict = {
     # 外部规则集（mihomo rule-provider，.mrs 二进制，引用而非拷贝）
@@ -47,7 +58,9 @@ def policy_rules(policy: dict, resolve=None) -> list[str]:
     for route in policy.get("routes", []):
         to = resolve(route["to"])
         for name in route.get("rule_set", []):
-            ipcidr = providers.get(name, {}).get("behavior") == "ipcidr"
+            if name not in providers:  # 编辑后可能引用未声明 provider → 跳过，别产坏配置
+                continue
+            ipcidr = providers[name].get("behavior") == "ipcidr"
             rules.append(f"RULE-SET,{name},{to}" + (",no-resolve" if ipcidr else ""))
         for site in route.get("geosite", []):
             rules.append(f"GEOSITE,{site},{to}")
