@@ -59,6 +59,20 @@ def test_full_mode_dns_tun_from_direct_routes():
     assert "123.57.92.37/32" in cfg["tun"]["route-exclude-address"]
 
 
+def test_full_dns_has_default_nameserver():
+    cfg = build_subscription([_node("🇭🇰 HK 01")], {}, full=True)
+    assert "system" in cfg["dns"]["default-nameserver"]  # 引导 DNS（关键修复：没它出网会断）
+
+
+def test_full_dns_configurable():
+    pol = {"final": "PROXY", "dns": {
+        "default_nameserver": ["223.6.6.6"], "nameserver": ["https://dns.alidns.com/dns-query"], "fallback": ["8.8.8.8"]}}
+    cfg = build_subscription([_node("🇭🇰 HK 01")], {}, full=True, policy=pol)["dns"]
+    assert cfg["default-nameserver"] == ["223.6.6.6"]
+    assert cfg["nameserver"] == ["https://dns.alidns.com/dns-query"]
+    assert cfg["fallback"] == ["8.8.8.8"]
+
+
 def test_custom_final_group():
     rules = build_subscription([_node("🇯🇵 JP 01")], {}, policy={"final": "JP"})["rules"]
     assert rules[-1] == "MATCH,JP"
