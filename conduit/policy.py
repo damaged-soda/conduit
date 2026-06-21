@@ -57,8 +57,12 @@ def policy_rules(policy: dict, resolve=None) -> list[str]:
 
 
 def rule_providers_block(policy: dict) -> dict:
-    """policy.rule_providers → mihomo `rule-providers:` 块（只含被 routes 引用到的）。"""
-    referenced = {name for route in policy.get("routes", []) for name in route.get("rule_set", [])}
+    """policy.rule_providers → mihomo `rule-providers:` 块（只含被 routes 引用到的，按出现顺序去重→输出稳定）。"""
+    referenced: list[str] = []
+    for route in policy.get("routes", []):
+        for name in route.get("rule_set", []):
+            if name not in referenced:
+                referenced.append(name)
     specs = policy.get("rule_providers", {})
     out: dict = {}
     for name in referenced:
