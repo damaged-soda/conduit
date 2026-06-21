@@ -203,5 +203,50 @@ def test_sub_clash_empty_is_valid_all_direct():
     assert cfg["rules"] == ["MATCH,DIRECT"]  # 无节点 → 合法的全直连配置
 
 
+def test_node_list_has_region_fields():
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    n = c.get(f"/api/subscriptions/{sid}/nodes").json()[0]
+    assert {"region", "region_auto", "region_override", "quarantined"} <= set(n)
+
+
+def test_region_override_reflects_in_nodes_and_grouping():
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    aid = c.get(f"/api/subscriptions/{sid}/nodes").json()[0]["access_id"]
+    assert c.put(f"/api/nodes/{aid}/tag", json={"region": "JP"}).status_code == 200
+    by = {n["access_id"]: n for n in c.get(f"/api/subscriptions/{sid}/nodes").json()}
+    assert by[aid]["region_override"] == "JP" and by[aid]["region"] == "JP"
+    token = c.get("/api/sub-token").json()["token"]
+    cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
+    gnames = {g["name"] for g in cfg["proxy-groups"]}
+    assert {"PROXY", "AUTO", "JP"} <= gnames
+
+
+def test_quarantine_excludes_from_subscription():
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    aid = c.get(f"/api/subscriptions/{sid}/nodes").json()[0]["access_id"]
+    c.put(f"/api/nodes/{aid}/tag", json={"quarantined": True})
+    token = c.get("/api/sub-token").json()["token"]
+    cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
+    assert len(cfg["proxies"]) == 1  # fixture 2 个，隔离 1 个
+
+
+def test_tag_survives_reimport():
+    """标签按 access_id 存 → 重新导入同一订阅后仍在（两层身份的意义）。"""
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    aid = c.get(f"/api/subscriptions/{sid}/nodes").json()[0]["access_id"]
+    c.put(f"/api/nodes/{aid}/tag", json={"region": "US"})
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})  # 重新导入
+    by = {n["access_id"]: n for n in c.get(f"/api/subscriptions/{sid}/nodes").json()}
+    assert by[aid]["region_override"] == "US"
+
+
 def test_index_page():
     assert _client().get("/").status_code == 200

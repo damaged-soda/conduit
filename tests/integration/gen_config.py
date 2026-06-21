@@ -35,11 +35,13 @@ def main() -> None:
         "bind-address": "*",
         "external-controller": "0.0.0.0:9090",
     })
-    # 隔离网无公网：健康检查指向本地 echo-health（否则上游全被判死，切换测试不准）
+    # 隔离网无公网：健康检查指向本地 echo-health（否则上游全被判死，切换测试不准）。
+    # 只改有健康检查的组（fallback/url-test）；PROXY 是 select，无 url。
     for g in cfg.get("proxy-groups", []):
-        g["url"] = "http://echo-health:5678"
-        g["expected-status"] = "200"
-        g["interval"] = 10
+        if g.get("type") in ("fallback", "url-test"):
+            g["url"] = "http://echo-health:5678"
+            g["expected-status"] = "200"
+            g["interval"] = 10
     (HERE / "mihomo.generated.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
     print("generated mihomo.generated.yaml from render_subscription output")
 
