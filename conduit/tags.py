@@ -66,13 +66,15 @@ def normalize_region(value: str | None) -> str | None:
 
 
 def region_of(name: str) -> str:
-    """节点名 → region code（HK/JP/…）。优先解码旗帜 emoji，否则关键词，再否则「未分类」。"""
+    """节点名 → region code（HK/JP/…）。
+
+    **文本关键词优先，旗帜 emoji 兜底** —— 机场常把台湾节点标 🇨🇳（`🇨🇳 Taiwan`），
+    文本比旗帜可信；旗帜只在没有已知关键词时兜底（覆盖 IT/ES/BR 等没列关键词的国家）。
+    都认不出 → 「未分类」。
+    """
     name = name or ""
-    code = _flag_code(name)
-    if code:
-        return code
     low = name.lower()
     for region, kws in _KEYWORDS.items():
         if any(kw in low for kw in kws):
             return region
-    return UNKNOWN
+    return _flag_code(name) or UNKNOWN

@@ -183,6 +183,11 @@ input,button,select,textarea{padding:5px;margin:2px 0;font-size:13px}
 input[type=text]{width:100%;box-sizing:border-box}
 textarea{width:100%;height:110px;box-sizing:border-box}
 .row{margin:.6rem 0}.muted{color:#888;font-size:12px}.msg{color:#06c;font-size:12px}
+details{margin:3px 0;border:1px solid #e3e3e3;border-radius:6px}
+summary{cursor:pointer;font-weight:600;font-size:13px;padding:5px 8px;user-select:none}
+.nrow{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:3px 8px 3px 22px;font-size:12px;border-top:1px solid #f0f0f0}
+.nrow>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nctl{display:flex;gap:6px;align-items:center;flex:none}
 </style></head>
 <body>
 <h1>conduit</h1>
@@ -196,7 +201,7 @@ textarea{width:100%;height:110px;box-sizing:border-box}
 </div>
 <script>
 // 全部数据走 textContent / DOM，避免订阅来的 raw_name 等造成 XSS
-let SUBS=[], SEL=null;
+let SUBS=[], SEL=null, NOPEN=new Set();  // NOPEN：记住展开的地区，re-render 时保留
 function el(t,x){const e=document.createElement(t);if(x!=null)e.textContent=x;return e}
 function input(ph,val){const e=document.createElement('input');e.type='text';e.placeholder=ph||'';if(val!=null)e.value=val;return e}
 function btn(label,fn){const b=el('button',label);b.onclick=fn;return b}
@@ -257,24 +262,29 @@ async function renderDetail(){
 
 async function loadNodes(box){
   const nodes=await j(`/api/subscriptions/${SEL}/nodes`);
-  const tbl=document.createElement('table');
-  const head=document.createElement('tr');['名','region','隔离','类型','地址'].forEach(h=>head.append(el('th',h)));
-  tbl.append(head);
-  nodes.forEach(n=>{
-    const tr=document.createElement('tr');
-    if(n.quarantined)tr.style.opacity='0.4';
-    tr.append(el('td',n.raw_name));
-    const ri=input(n.region_auto,n.region_override||'');ri.style.width='60px';
+  const byR={}, q=[];
+  nodes.forEach(n=>{ if(n.quarantined) q.push(n); else (byR[n.region]=byR[n.region]||[]).push(n); });
+  const wrap=document.createElement('div');
+  Object.keys(byR).sort((a,b)=>byR[b].length-byR[a].length||a.localeCompare(b)).forEach(r=>wrap.append(regionNode(r,byR[r],box)));
+  if(q.length) wrap.append(regionNode('🚫 隔离区',q,box));
+  const hint=el('div',`共 ${nodes.length} 个 · ${Object.keys(byR).length} 地区 · 隔离 ${q.length}　|　点地区展开；region 框留空=自动、填了=覆盖；勾选=隔离`);hint.className='muted';
+  box.replaceChildren(hint,wrap);
+}
+function regionNode(region,list,box){
+  const d=document.createElement('details');d.open=NOPEN.has(region);
+  d.addEventListener('toggle',()=>{d.open?NOPEN.add(region):NOPEN.delete(region)});
+  const s=document.createElement('summary');s.textContent=`${region} · ${list.length}`;d.append(s);
+  list.forEach(n=>{
+    const row=document.createElement('div');row.className='nrow';
+    row.append(el('span',n.raw_name));
+    const ri=input(n.region_auto,n.region_override||'');ri.style.width='54px';ri.title='region 覆盖（留空=自动）';
     ri.onchange=async()=>{await setTag(n.access_id,ri.value,n.quarantined);await loadNodes(box)};
-    const rtd=document.createElement('td');rtd.append(ri);tr.append(rtd);
-    const cb=document.createElement('input');cb.type='checkbox';cb.checked=!!n.quarantined;
+    const cb=document.createElement('input');cb.type='checkbox';cb.checked=!!n.quarantined;cb.title='隔离';
     cb.onchange=async()=>{await setTag(n.access_id,n.region_override,cb.checked);await loadNodes(box)};
-    const qtd=document.createElement('td');qtd.append(cb);tr.append(qtd);
-    tr.append(el('td',n.type),el('td',`${n.server}:${n.port}`));
-    tbl.append(tr);
+    const ctl=document.createElement('span');ctl.className='nctl';ctl.append(ri,cb);
+    row.append(ctl);d.append(row);
   });
-  const hint=el('div',`共 ${nodes.length} · region 留空=自动(占位符)/填了=覆盖；勾选=隔离(不进任何组)`);hint.className='muted';
-  box.replaceChildren(hint,tbl);
+  return d;
 }
 async function setTag(aid,region,quarantined){
   await fetch('/api/nodes/'+encodeURIComponent(aid)+'/tag',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({region:region||null,quarantined:!!quarantined})});
