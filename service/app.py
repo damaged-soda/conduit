@@ -260,28 +260,34 @@ async function renderDetail(){
   await loadNodes(nbox);
 }
 
+const STDREGIONS=['HK','TW','JP','SG','US','KR','GB','DE','FR','NL','CA','AU'];  // 下拉常驻地区
 async function loadNodes(box){
   const nodes=await j(`/api/subscriptions/${SEL}/nodes`);
   const byR={}, q=[];
   nodes.forEach(n=>{ if(n.quarantined) q.push(n); else (byR[n.region]=byR[n.region]||[]).push(n); });
+  // 下拉选项 = 常驻地区 ∪ 本订阅出现过的所有 region/自动 region
+  const allR=[...new Set([...STDREGIONS,...nodes.map(n=>n.region),...nodes.map(n=>n.region_auto)])].filter(Boolean).sort();
   const wrap=document.createElement('div');
-  Object.keys(byR).sort((a,b)=>byR[b].length-byR[a].length||a.localeCompare(b)).forEach(r=>wrap.append(regionNode(r,byR[r],box)));
-  if(q.length) wrap.append(regionNode('🚫 隔离区',q,box));
-  const hint=el('div',`共 ${nodes.length} 个 · ${Object.keys(byR).length} 地区 · 隔离 ${q.length}　|　点地区展开；region 框留空=自动、填了=覆盖；勾选=隔离`);hint.className='muted';
+  Object.keys(byR).sort((a,b)=>byR[b].length-byR[a].length||a.localeCompare(b)).forEach(r=>wrap.append(regionNode(r,byR[r],box,allR)));
+  if(q.length) wrap.append(regionNode('🚫 隔离区',q,box,allR));
+  const hint=el('div',`共 ${nodes.length} 个 · ${Object.keys(byR).length} 地区 · 隔离 ${q.length}　|　点地区展开；下拉选 region(自动/覆盖)、勾选=隔离`);hint.className='muted';
   box.replaceChildren(hint,wrap);
 }
-function regionNode(region,list,box){
+function regionNode(region,list,box,allR){
   const d=document.createElement('details');d.open=NOPEN.has(region);
   d.addEventListener('toggle',()=>{d.open?NOPEN.add(region):NOPEN.delete(region)});
   const s=document.createElement('summary');s.textContent=`${region} · ${list.length}`;d.append(s);
   list.forEach(n=>{
     const row=document.createElement('div');row.className='nrow';
     row.append(el('span',n.raw_name));
-    const ri=input(n.region_auto,n.region_override||'');ri.style.width='54px';ri.title='region 覆盖（留空=自动）';
-    ri.onchange=async()=>{await setTag(n.access_id,ri.value,n.quarantined);await loadNodes(box)};
+    const sel=document.createElement('select');sel.title='region：自动 / 覆盖到某地区';
+    const o0=document.createElement('option');o0.value='';o0.textContent='自动·'+n.region_auto;sel.append(o0);
+    allR.forEach(r=>{const o=document.createElement('option');o.value=r;o.textContent=r;sel.append(o)});
+    sel.value=n.region_override||'';
+    sel.onchange=async()=>{await setTag(n.access_id,sel.value,n.quarantined);await loadNodes(box)};
     const cb=document.createElement('input');cb.type='checkbox';cb.checked=!!n.quarantined;cb.title='隔离';
     cb.onchange=async()=>{await setTag(n.access_id,n.region_override,cb.checked);await loadNodes(box)};
-    const ctl=document.createElement('span');ctl.className='nctl';ctl.append(ri,cb);
+    const ctl=document.createElement('span');ctl.className='nctl';ctl.append(sel,cb);
     row.append(ctl);d.append(row);
   });
   return d;
