@@ -45,6 +45,26 @@ _KEYWORDS: dict[str, tuple[str, ...]] = {
 }
 
 
+# 不能当 region（会撞 mihomo 组名/策略）
+_RESERVED_GROUPS = {"AUTO", "PROXY", "DIRECT", "REJECT", "REJECT-DROP", "PASS", "GLOBAL", "COMPATIBLE"}
+
+
+def normalize_region(value: str | None) -> str | None:
+    """规范化人工 region 覆盖：去空→None；ascii 短码大写(hk→HK)；非 ascii 标签保留。
+
+    拒绝保留名 / 逗号换行 / 超长（避免产出坏组名）。非法抛 ValueError。
+    """
+    s = (value or "").strip()
+    if not s:
+        return None
+    if len(s) > 24 or any(ch in s for ch in ",\n\r\t"):
+        raise ValueError("region 非法（过长或含逗号/换行）")
+    norm = s.upper() if s.isascii() else s
+    if norm.upper() in _RESERVED_GROUPS:
+        raise ValueError(f"region 不能用保留名：{norm}")
+    return norm
+
+
 def region_of(name: str) -> str:
     """节点名 → region code（HK/JP/…）。优先解码旗帜 emoji，否则关键词，再否则「未分类」。"""
     name = name or ""

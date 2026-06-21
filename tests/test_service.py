@@ -248,5 +248,26 @@ def test_tag_survives_reimport():
     assert by[aid]["region_override"] == "US"
 
 
+def test_tag_partial_update_preserves_other_field():
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    aid = c.get(f"/api/subscriptions/{sid}/nodes").json()[0]["access_id"]
+    c.put(f"/api/nodes/{aid}/tag", json={"quarantined": True})  # 只设隔离
+    c.put(f"/api/nodes/{aid}/tag", json={"region": "JP"})  # 只设 region —— 不能清掉隔离
+    n = {x["access_id"]: x for x in c.get(f"/api/subscriptions/{sid}/nodes").json()}[aid]
+    assert n["region_override"] == "JP" and n["quarantined"] is True
+
+
+def test_tag_rejects_reserved_or_bad_region():
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    aid = c.get(f"/api/subscriptions/{sid}/nodes").json()[0]["access_id"]
+    assert c.put(f"/api/nodes/{aid}/tag", json={"region": "AUTO"}).status_code == 400
+    assert c.put(f"/api/nodes/{aid}/tag", json={"region": "hk,x"}).status_code == 400
+    assert c.put(f"/api/nodes/{aid}/tag", json={"region": "hk"}).status_code == 200  # 正常码 → HK
+
+
 def test_index_page():
     assert _client().get("/").status_code == 200

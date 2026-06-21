@@ -5,12 +5,24 @@ from __future__ import annotations
 import pathlib
 import sys
 
+import pytest
+
 HERE = pathlib.Path(__file__).parent
 sys.path.insert(0, str(HERE.parent))
 
 from conduit.models import AccessId, EndpointId, Node  # noqa: E402
 from conduit.render import build_subscription  # noqa: E402
-from conduit.tags import UNKNOWN, region_of  # noqa: E402
+from conduit.tags import UNKNOWN, normalize_region, region_of  # noqa: E402
+
+
+def test_normalize_region():
+    assert normalize_region("hk") == "HK"
+    assert normalize_region("  jp ") == "JP"
+    assert normalize_region("") is None and normalize_region(None) is None
+    assert normalize_region("流媒体") == "流媒体"  # 非 ascii 标签保留
+    for bad in ("AUTO", "PROXY", "DIRECT", "a,b", "x\ny", "z" * 25):
+        with pytest.raises(ValueError):
+            normalize_region(bad)
 
 
 def _node(name: str, server: str = "s.com", port: int = 443, **params) -> Node:

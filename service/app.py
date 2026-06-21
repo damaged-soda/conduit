@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from conduit.ingest import normalize
 from conduit.render import render_subscription
-from conduit.tags import region_of
+from conduit.tags import normalize_region, region_of
 
 from .db import Store
 from .fetch import fetch_url
@@ -110,7 +110,15 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
 
     @app.put("/api/nodes/{access_id}/tag")
     def set_node_tag(access_id: str, body: TagIn):
-        store.set_node_tag(access_id, region=body.region, quarantined=bool(body.quarantined))
+        kwargs: dict = {}  # 只更新本次提供的字段（部分更新；未传的保持不变）
+        if "region" in body.model_fields_set:
+            try:
+                kwargs["region"] = normalize_region(body.region)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+        if "quarantined" in body.model_fields_set:
+            kwargs["quarantined"] = bool(body.quarantined)
+        store.set_node_tag(access_id, **kwargs)
         return {"ok": True}
 
     @app.post("/api/subscriptions/{sub_id}/import")
