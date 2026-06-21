@@ -9,7 +9,7 @@ HERE = pathlib.Path(__file__).parent
 sys.path.insert(0, str(HERE.parent))
 
 from conduit.models import AccessId, EndpointId, Node  # noqa: E402
-from conduit.policy import DEFAULT_POLICY, policy_rules  # noqa: E402
+from conduit.policy import DEFAULT_POLICY, policy_rules, rule_providers_block  # noqa: E402
 from conduit.render import build_subscription  # noqa: E402
 
 
@@ -43,3 +43,26 @@ def test_subscription_rule_order():
 def test_custom_final_group():
     rules = build_subscription([_node("🇯🇵 JP 01")], {}, policy={"final": "JP"})["rules"]
     assert rules[-1] == "MATCH,JP"
+
+
+def test_rule_set_routes_and_providers_block():
+    rules = policy_rules(DEFAULT_POLICY)
+    assert "RULE-SET,ai,US" in rules and "RULE-SET,netflix,HK" in rules  # 类别 → 地区组
+    block = rule_providers_block(DEFAULT_POLICY)
+    assert set(block) == {"ai", "netflix", "disney", "youtube"}  # 只含被引用的
+    assert block["ai"]["format"] == "mrs" and block["ai"]["behavior"] == "domain"
+    assert block["netflix"]["url"].endswith("netflix.mrs")
+
+
+def test_resolve_falls_back_to_final_for_missing_group():
+    # 没有 US 节点 → AI 那条 route 落到 final；HK 存在 → 保留
+    rules = policy_rules(DEFAULT_POLICY, resolve=lambda to: to if to in {"DIRECT", "REJECT", "HK"} else "PROXY")
+    assert "RULE-SET,ai,PROXY" in rules and "RULE-SET,ai,US" not in rules
+    assert "RULE-SET,netflix,HK" in rules
+
+
+def test_rule_providers_only_when_used():
+    cfg = build_subscription([_node("🇭🇰 HK 01")], {})
+    assert "rule-providers" in cfg and "netflix" in cfg["rule-providers"]
+    cfg2 = build_subscription([_node("🇭🇰 HK 01")], {}, policy={"final": "PROXY"})
+    assert "rule-providers" not in cfg2  # 无 rule_set 的策略 → 无 providers 块

@@ -1,36 +1,76 @@
 """规则面（策略层）：conduit 自有、**版本管理在仓库**的路由策略，跟订阅 / 节点地址解耦。
 
-三平面里的顶层：规则只引用**组名**（PROXY/HK/…，来自标签层）+ **geo 类别**（cn / category-ads-all…）。
-geo 数据靠 mihomo 内置的 geosite/geoip 库 —— **引用而非拷贝**，所以这份策略可读、可 diff、可长期维护
-（目标 #2 解耦、#5 版本管理）。要调路由就改这个文件，不碰节点 / 订阅。
+模型 = 你说的「规则 = 一组匹配 → 一个目标(标签/组)」，也是机场/subconverter 的行业主流
+（类别 → rule-provider → 策略组）。每条 `route` = `{to: 目标, 匹配...}`，顺序即优先级。
 
-规则顺序（render 拼）：私网/tailnet 兜底直连(rule#0) → 调用方 direct-list → 本策略(reject→direct) → MATCH,final。
+- 目标 `to`：节点组名（HK/JP/US/PROXY… 来自标签层）或内置 `DIRECT`/`REJECT`。
+  render 会把指向「当前不存在的组」的 route 落到 `final`，保证配置合法。
+- 匹配来源：内置 `geosite`/`geoip`（mihomo 自带 geo 库，用于 cn/广告这种大类）+ `rule_set`
+  （外部维护的 .mrs 规则集，用于流媒体/AI 这种细类，**引用而非拷贝**，自动更新）。
+
+改路由就改这个文件，不碰节点 / 订阅（目标 #2 解耦、#5 版本管理）。
 """
 
 from __future__ import annotations
 
-# v1 默认策略：广告拒绝 + 中国直连 + 其余走代理。改这里就改全局分流。
+_MRS = "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo"
+
+# v1 默认策略。改这里就改全局分流。
 DEFAULT_POLICY: dict = {
-    "reject": {"geosite": ["category-ads-all"]},  # 广告 → REJECT
-    "direct": {"geosite": ["cn"], "geoip": ["CN"]},  # 中国域名/IP → 直连
-    "final": "PROXY",  # 其余兜底走哪个组（顶层 select）
+    # 外部规则集（mihomo rule-provider，.mrs 二进制，引用而非拷贝）
+    "rule_providers": {
+        "ai": {"behavior": "domain", "url": f"{_MRS}/geosite/category-ai-!cn.mrs"},
+        "netflix": {"behavior": "domain", "url": f"{_MRS}/geosite/netflix.mrs"},
+        "disney": {"behavior": "domain", "url": f"{_MRS}/geosite/disney.mrs"},
+        "youtube": {"behavior": "domain", "url": f"{_MRS}/geosite/youtube.mrs"},
+    },
+    # 路由：一组匹配 → 一个目标，顺序即优先级
+    "routes": [
+        {"to": "REJECT", "geosite": ["category-ads-all"]},  # 广告 → 拒绝
+        {"to": "DIRECT", "geosite": ["cn"], "geoip": ["CN"]},  # 中国域名/IP → 直连
+        {"to": "US", "rule_set": ["ai"]},  # ChatGPT/Claude 等 → 美国组
+        {"to": "HK", "rule_set": ["netflix", "disney", "youtube"]},  # 流媒体 → 香港组
+    ],
+    "final": "PROXY",  # 其余兜底走哪个组
 }
 
 
-def policy_rules(policy: dict) -> list[str]:
-    """策略 → mihomo 规则串（不含 baseline 私网兜底 + 调用方 direct-list + 末尾 MATCH，那些 render 拼）。
+def policy_rules(policy: dict, resolve=None) -> list[str]:
+    """策略 → mihomo 规则串（不含 baseline 私网兜底 + 调用方 direct-list + 末尾 MATCH）。
 
-    顺序：先 reject（广告），再 direct（中国）。geoip 用 no-resolve（只匹配已是 IP 的连接，不额外解析）。
+    resolve(to)→to：render 传入，把指向「不存在的组」的 route 落到 final（默认原样）。
+    ipcidr 类（geoip / ipcidr 的 rule_set）带 no-resolve。
     """
+    resolve = resolve or (lambda to: to)
+    providers = policy.get("rule_providers", {})
     rules: list[str] = []
-    rej = policy.get("reject", {})
-    for site in rej.get("geosite", []):
-        rules.append(f"GEOSITE,{site},REJECT")
-    for ip in rej.get("geoip", []):
-        rules.append(f"GEOIP,{ip},REJECT,no-resolve")
-    dr = policy.get("direct", {})
-    for site in dr.get("geosite", []):
-        rules.append(f"GEOSITE,{site},DIRECT")
-    for ip in dr.get("geoip", []):
-        rules.append(f"GEOIP,{ip},DIRECT,no-resolve")
+    for route in policy.get("routes", []):
+        to = resolve(route["to"])
+        for name in route.get("rule_set", []):
+            ipcidr = providers.get(name, {}).get("behavior") == "ipcidr"
+            rules.append(f"RULE-SET,{name},{to}" + (",no-resolve" if ipcidr else ""))
+        for site in route.get("geosite", []):
+            rules.append(f"GEOSITE,{site},{to}")
+        for ip in route.get("geoip", []):
+            rules.append(f"GEOIP,{ip},{to},no-resolve")
     return rules
+
+
+def rule_providers_block(policy: dict) -> dict:
+    """policy.rule_providers → mihomo `rule-providers:` 块（只含被 routes 引用到的）。"""
+    referenced = {name for route in policy.get("routes", []) for name in route.get("rule_set", [])}
+    specs = policy.get("rule_providers", {})
+    out: dict = {}
+    for name in referenced:
+        spec = specs.get(name)
+        if not spec:
+            continue
+        out[name] = {
+            "type": "http",
+            "behavior": spec.get("behavior", "domain"),
+            "format": spec.get("format", "mrs"),
+            "url": spec["url"],
+            "interval": spec.get("interval", 86400),
+            "path": f"./ruleset/{name}.mrs",
+        }
+    return out

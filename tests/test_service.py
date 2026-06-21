@@ -210,6 +210,16 @@ def test_policy_endpoint_exposes_rules():
     assert r["policy"]["final"] == "PROXY"
 
 
+def test_sub_clash_has_rule_providers_and_category_routes():
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    token = c.get("/api/sub-token").json()["token"]
+    cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
+    assert "rule-providers" in cfg and "netflix" in cfg["rule-providers"]
+    assert any(r.startswith("RULE-SET,ai,") for r in cfg["rules"])  # AI 类别有路由
+
+
 def test_sub_clash_has_china_direct_rules():
     c = _client()
     sid = _mksub(c)
