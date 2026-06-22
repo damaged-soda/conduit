@@ -37,6 +37,11 @@ uvicorn --factory service.app:make_app   # DB 路径用 CONDUIT_DB，默认 cond
 - `GET /sub/clash?token=&full=`：`pure` = proxies + 地区分组 + 规则；`full=1` 再加 fake-ip dns + tun（IPv6 接管 + default-nameserver，见根 [CONSTRAINTS.md](../CONSTRAINTS.md) 「full 模式必须项」）
 - `GET /api/sub-token`（+ 页面显示可复制 URL）；token 保护节点凭据，DB `--no-access-log`
 
+**部署侧 mesh DNS 输入**（非 secret，不进 DB）：如调用方有私有 mesh / MagicDNS，可设
+`CONDUIT_MESH_DOMAIN_SUFFIXES=ts.net`；full 模式需要专用解析器时再设
+`CONDUIT_MESH_DNS_SERVER=100.100.100.100`。这些值会运行时合入 policy：生成 DIRECT 规则、
+fake-ip 放行和 `nameserver-policy`，包括已有自定义 policy 的场景。conduit 不内置具体 tailnet 名。
+
 存储：`service/db.py`（SQLite）：`subscriptions/imports/nodes` + `meta`（key=`policy` 存自定义策略 JSON）+ 节点标签。⚠️ 含明文凭据 = secret 载体，别对公网暴露、别进 git。
 
 ⚠️ **暂无认证** —— 只在 `127.0.0.1` / tailnet（Tailscale ACL）下可接受，**别裸绑 0.0.0.0**（认证归 later）。

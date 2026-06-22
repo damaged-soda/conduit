@@ -72,6 +72,7 @@ class PolicyIn(BaseModel):
 _MRS_BASE = "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo"
 _RULESET_NAME = re.compile(r"^[A-Za-z0-9_!.-]+$")  # 防 ../ 路径穿越
 _DOMAINPAT = re.compile(r"[A-Za-z0-9_.*!+-]{1,100}")  # 显式域名匹配（无逗号换行 → 防规则注入）
+_DOMAIN_SUFFIX = re.compile(r"[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*")
 _PLAINVAL = re.compile(r"[^,\n\r]{1,100}")  # 进程名等（无逗号换行）
 _PORTPAT = re.compile(r"\d{1,5}(-\d{1,5})?")
 
@@ -102,6 +103,58 @@ def _validate_matchers(r) -> None:
 def _check_url(url: str | None) -> None:
     if url and not url.startswith(("http://", "https://")):
         raise HTTPException(400, "url 必须是 http(s)")  # SSRF 兜底：拒 file:// 等
+
+
+def _mesh_domain_suffixes() -> list[str]:
+    """部署侧注入的私有 mesh DNS 后缀；conduit 不内置任何具体 tailnet 名。"""
+    raw = os.environ.get("CONDUIT_MESH_DOMAIN_SUFFIXES", "")
+    out: list[str] = []
+    for part in re.split(r"[,\s]+", raw):
+        suffix = part.strip().lower().rstrip(".")
+        if suffix.startswith(("+.", "*.")):
+            suffix = suffix[2:]
+        if not suffix:
+            continue
+        if not _DOMAIN_SUFFIX.fullmatch(suffix):
+            raise RuntimeError(f"CONDUIT_MESH_DOMAIN_SUFFIXES 非法：{part}")
+        if suffix not in out:
+            out.append(suffix)
+    return out
+
+
+def _with_mesh_bypass(policy: dict) -> dict:
+    """把部署侧 mesh DNS 事实合入 policy，但不落库、不覆盖用户自定义规则。"""
+    routes = [dict(r) for r in policy.get("routes", [])]
+    dns = dict(policy.get("dns", {}))
+    suffixes = _mesh_domain_suffixes()
+    if suffixes:
+        existing = {
+            s
+            for r in routes
+            if r.get("to") == "DIRECT"
+            for s in r.get("domain_suffix", [])
+        }
+        missing = [s for s in suffixes if s not in existing]
+        if missing:
+            routes = [{"name": "mesh DNS", "to": "DIRECT", "domain_suffix": missing}] + routes
+
+        server = os.environ.get("CONDUIT_MESH_DNS_SERVER", "").strip()
+        if server:
+            if "\n" in server or "\r" in server or len(server) > 200:
+                raise RuntimeError("CONDUIT_MESH_DNS_SERVER 非法")
+            nsp = dict(dns.get("nameserver_policy", {}))
+            for suffix in suffixes:
+                nsp.setdefault(f"+.{suffix}", server)
+            dns["nameserver_policy"] = nsp
+
+    out = {
+        "rule_providers": policy.get("rule_providers", {}),
+        "routes": routes,
+        "final": policy.get("final", "PROXY"),
+    }
+    if dns:
+        out["dns"] = dns
+    return out
 
 
 def _normalize_and_store(store: Store, sub: dict, raw: str) -> dict:
@@ -200,13 +253,13 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
         # DB 为准；无则回落仓库 DEFAULT。rule_providers 始终服务端控制（不让 PUT 注入任意 URL，防 SSRF）。
         stored = store.get_policy()
         if not stored:
-            return DEFAULT_POLICY
-        return {
+            return _with_mesh_bypass(DEFAULT_POLICY)
+        return _with_mesh_bypass({
             "rule_providers": DEFAULT_POLICY.get("rule_providers", {}),
             "routes": stored.get("routes", []),
             "final": stored.get("final", "PROXY"),
             "dns": stored.get("dns", {}),
-        }
+        })
 
     def _groups() -> list[str]:
         tags = store.get_node_tags()
