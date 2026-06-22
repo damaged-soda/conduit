@@ -51,10 +51,15 @@ mihomo health-check → 指标存储 → 生成器读「过去 N 时长不健康
 - conduit 只消费一个标准的「节点健康历史」接口，schema 大致：`access_id / rendered_proxy_name / target / group / ts / status / latency / source`。关键是把 mihomo runtime 里的 proxy 名稳定映射回 `access_id`。
 - 指标怎么采、存哪（Prometheus / 别的）是**部署细节，调用方定**。
 
-## 规则结构
-- 三层间接：规则 → 策略(意图) → group(物理选择)。规则文件只写 `域名 → 策略:x`，模板绑 `策略:x → group`。换节点选择时不动规则文件。
-- **policy 在编译期绑成具体 group 名**（mihomo 规则只能指向具体 proxy/group；`RULE-SET,name,target` 才带目标）。
-- 大的 domain/ipcidr 集合编 `.mrs` 提速；**`.mrs` 目前只支持 `domain` / `ipcidr`，不支持 `classical`** —— process / port / 逻辑 / classical 规则保留 YAML/text。
+## 规则结构（已落地 `conduit/policy.py`）
+- 模型 =「规则 = 一组匹配 → 一个目标组」(行业主流 category→provider→group)。`DEFAULT_POLICY` = `routes`(每条 `{name, to:目标组, geosite/geoip/rule_set/domain_suffix/domain/ip_cidr/process_name/dst_port}`，顺序即优先级) + `final`(兜底组)。规则只引用**组名**，永不引用订阅/节点。
+- **目标在 render 期校验存在性**：`to`/`final` 不在 {DIRECT,REJECT,PROXY,AUTO,各地区组} 就落到 `final`/PROXY，保证 mihomo 配置合法。
+- 匹配来源：内置 `geosite`/`geoip`(mihomo 自带 geo 库，cn/广告大类) + `rule_set`(MetaCubeX `.mrs` 外部规则集，引用而非拷贝、自动更新)。**`.mrs` 只支持 `domain`/`ipcidr`，不支持 `classical`** → process/port 等用显式 `process_name`/`dst_port` 渲成 PROCESS-NAME/DST-PORT。
+- **可编辑**：策略存 DB(`meta` key=`policy`)，无则回落仓库 `DEFAULT_POLICY`；页面 / `PUT /api/policy` 改。`rule_providers` 服务端控制(防 PUT 注入 URL → SSRF)、geosite/geoip 走服务端白名单。
+
+## 分组 + 订阅输出（已落地）
+- **地区分组**(`conduit/tags.py`)：`region_of` **文本关键词优先、旗帜 emoji 兜底**(机场常把台湾标 🇨🇳)；render 按 region 分组 = `PROXY`(select:[AUTO,各地区]) + `AUTO`(fallback) + 每地区一个 fallback 组。标签按 access_id 存 DB、跟节点走。
+- **服务以订阅形态下发**：`conduit-service` 把节点池+分组+规则渲成 clash 订阅 `GET /sub/clash?token=&full=`；`pure` 纯净、`full` 加 fake-ip dns + tun（full 模式必须项见 [CONSTRAINTS.md](CONSTRAINTS.md)）。clash-verge/mihomo 直接订阅，等价 `fetch→tag→render` 流水线的产物。
 
 ## 目录
 ```text
@@ -66,8 +71,9 @@ secrets/      订阅 URL 等（gitignored）
 tests/        测试：golden 配置不变量 + Docker 集成台（见 TESTING.md）
 ```
 
-## 待定设计点（按 Codex review 收敛后）
-- **节点身份模型**（下一轮先啃）：`access_id` 精确进哪些参数、proxy 命名规则、人工 alias/merge/split 表的格式。
-- 「长期不健康」的具体**阈值与时间窗**、整组全挂的兜底。
+## 待定设计点
+- 节点身份的人工 `alias/merge/split` 表格式（EndpointId+AccessId 已落地，这是边界细化）。
+- 「长期不健康」的具体**阈值与时间窗**、整组全挂的兜底（健康环尚未接）。
 - 监控采集器的数据模型与「未识别流量 → 规则建议」的落库形态（独立 collector + 出报告/PR，不自动改规则）。
-- 偏企业级、先标 later 的：controller TLS、订阅 `source_trust` 分级。
+- 订阅**定时刷新**（节点新鲜度：现导入即静态快照，机场轮换 IP 后会旧）。
+- 偏企业级、先标 later 的：controller TLS、订阅 `source_trust` 分级、认证、secret 加密。
