@@ -168,7 +168,7 @@ def test_sub_clash_has_subscription_headers():
     c = _client()
     token = c.get("/api/sub-token").json()["token"]
     r = c.get("/sub/clash", params={"token": token})
-    assert "attachment" in r.headers.get("content-disposition", "")
+    assert r.headers.get("content-disposition") == "attachment; filename=conduit.yaml"
     assert r.headers.get("access-control-allow-origin") == "*"
     assert r.headers.get("profile-update-interval")
 

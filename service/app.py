@@ -355,7 +355,7 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
             cfg,
             media_type="text/yaml; charset=utf-8",
             headers={
-                "content-disposition": 'attachment; filename="conduit.yaml"',
+                "content-disposition": "attachment; filename=conduit.yaml",
                 "profile-update-interval": "24",  # 小时
                 "access-control-allow-origin": "*",  # 防客户端在 webview 里 fetch 被 CORS 拦
             },
