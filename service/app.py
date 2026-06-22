@@ -601,9 +601,9 @@ async function renderDetail(){
   const sourceBox=document.createElement('div');
   function renderSourceControls(){
     sourceBox.replaceChildren();
-    if(mode==='url')sourceBox.append(row(el('label','URL：'),url),row(saveBtn,refreshBtn,msg));
-    else if(mode==='file')sourceBox.append(row(el('label','文件：'),file),row(saveBtn,importFileBtn,msg));
-    else sourceBox.append(el('div','文本导入：'),raw,row(saveBtn,importTextBtn,msg));
+    if(mode==='url')sourceBox.append(row(el('label','URL：'),url),row(refreshBtn));
+    else if(mode==='file')sourceBox.append(row(el('label','文件：'),file),row(importFileBtn));
+    else sourceBox.append(el('div','文本导入：'),raw,row(importTextBtn));
   }
   renderSourceControls();
 
@@ -613,7 +613,7 @@ async function renderDetail(){
     row(el('label','名字：'),name),
     row(el('label','来源：'),sourcePicker(mode,v=>{mode=v;renderSourceControls();setMsg('')})),
     sourceBox,
-    row(deleteBtn),
+    row(saveBtn,deleteBtn,msg),
   );
   const nbox=document.createElement('div');
   d.append(el('h3','节点 / 标签'), nbox);
