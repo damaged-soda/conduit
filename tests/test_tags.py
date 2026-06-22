@@ -20,7 +20,7 @@ def test_normalize_region():
     assert normalize_region("  jp ") == "JP"
     assert normalize_region("") is None and normalize_region(None) is None
     assert normalize_region("流媒体") == "流媒体"  # 非 ascii 标签保留
-    for bad in ("AUTO", "PROXY", "DIRECT", "a,b", "x\ny", "z" * 25):
+    for bad in ("AUTO", "AUTO-FAST", "PROXY", "DIRECT", "a,b", "x\ny", "z" * 25):
         with pytest.raises(ValueError):
             normalize_region(bad)
 
@@ -69,9 +69,15 @@ def test_grouping_by_region():
     groups = {g["name"]: g for g in cfg["proxy-groups"]}
     assert groups["PROXY"]["type"] == "select"
     assert groups["PROXY"]["proxies"][0] == "AUTO"  # 默认走 AUTO
-    assert {"HK", "JP", UNKNOWN, "AUTO", "PROXY"} <= set(groups)
+    assert {"HK", "JP", UNKNOWN, "AUTO", "AUTO-FAST", "PROXY"} <= set(groups)
     assert len(groups["HK"]["proxies"]) == 2
-    assert len(groups["AUTO"]["proxies"]) == 4  # 全部非隔离
+    assert groups["AUTO"]["type"] == "fallback"
+    assert groups["AUTO"]["proxies"][0] == "AUTO-FAST"
+    assert len(groups["AUTO-FAST"]["proxies"]) == 4  # 全部非隔离
+    assert groups["AUTO-FAST"]["type"] == "url-test"
+    assert groups["AUTO-FAST"]["tolerance"] == 200
+    assert groups["AUTO-FAST"]["max-failed-times"] == 1
+    assert groups["AUTO-FAST"]["hidden"] is True
     assert groups["HK"]["type"] == "fallback"
     assert "HK" in groups["PROXY"]["proxies"] and UNKNOWN in groups["PROXY"]["proxies"]
 

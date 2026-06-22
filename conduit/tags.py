@@ -46,7 +46,7 @@ _KEYWORDS: dict[str, tuple[str, ...]] = {
 
 
 # 不能当 region（会撞 mihomo 组名/策略）
-_RESERVED_GROUPS = {"AUTO", "PROXY", "DIRECT", "REJECT", "REJECT-DROP", "PASS", "GLOBAL", "COMPATIBLE"}
+_RESERVED_GROUPS = {"AUTO", "AUTO-FAST", "PROXY", "DIRECT", "REJECT", "REJECT-DROP", "PASS", "GLOBAL", "COMPATIBLE"}
 
 
 def normalize_region(value: str | None) -> str | None:
