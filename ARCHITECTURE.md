@@ -56,6 +56,7 @@ mihomo health-check → 指标存储 → 生成器读「过去 N 时长不健康
 - **目标在 render 期校验存在性**：`to`/`final` 不在 {DIRECT,REJECT,PROXY,AUTO,各地区组} 就落到 `final`/PROXY，保证 mihomo 配置合法。
 - 匹配来源：内置 `geosite`/`geoip`(mihomo 自带 geo 库，cn/广告大类) + `rule_set`(MetaCubeX `.mrs` 外部规则集，引用而非拷贝、自动更新)。**`.mrs` 只支持 `domain`/`ipcidr`，不支持 `classical`** → process/port 等用显式 `process_name`/`dst_port` 渲成 PROCESS-NAME/DST-PORT。
 - **可编辑**：策略存 DB(`meta` key=`policy`)，无则回落仓库 `DEFAULT_POLICY`；页面 / `PUT /api/policy` 改。`rule_providers` 服务端控制(防 PUT 注入 URL → SSRF)、geosite/geoip 走服务端白名单。
+- **部署侧 mesh DNS 输入**：调用方可通过 `CONDUIT_MESH_DOMAIN_SUFFIXES` 注入私有 mesh / MagicDNS 后缀；需要专用解析器时用 `CONDUIT_MESH_DNS_SERVER` 生成 `nameserver-policy`。这些运行时合入 policy，不写 DB，不把具体 tailnet 名固化进 conduit。
 
 ## 分组 + 订阅输出（已落地）
 - **地区分组**(`conduit/tags.py`)：`region_of` **文本关键词优先、旗帜 emoji 兜底**(机场常把台湾标 🇨🇳)；render 按 region 分组 = `PROXY`(select:[AUTO,各地区]) + `AUTO`(fallback) + 每地区一个 fallback 组。标签按 access_id 存 DB、跟节点走。

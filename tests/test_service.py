@@ -236,6 +236,24 @@ def test_policy_explicit_matchers_and_dns_in_full():
     assert "123.57.92.37/32" in cfg["tun"]["route-exclude-address"]
 
 
+def test_env_mesh_dns_suffix_augments_custom_policy(monkeypatch):
+    monkeypatch.setenv("CONDUIT_MESH_DOMAIN_SUFFIXES", "ts.net")
+    monkeypatch.setenv("CONDUIT_MESH_DNS_SERVER", "100.100.100.100")
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    pol = {"routes": [{"name": "custom", "to": "DIRECT", "domain_suffix": ["example.internal"]}],
+           "final": "PROXY"}
+    assert c.put("/api/policy", json=pol).status_code == 200
+
+    token = c.get("/api/sub-token").json()["token"]
+    cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token, "full": 1}).text)
+    assert "DOMAIN-SUFFIX,ts.net,DIRECT" in cfg["rules"]
+    assert "DOMAIN-SUFFIX,example.internal,DIRECT" in cfg["rules"]
+    assert "+.ts.net" in cfg["dns"]["fake-ip-filter"]
+    assert cfg["dns"]["nameserver-policy"]["+.ts.net"] == "100.100.100.100"
+
+
 def test_policy_rejects_bad_matchers():
     c = _client()
     assert c.put("/api/policy", json={"routes": [{"to": "DIRECT", "domain_suffix": ["a,b"]}]}).status_code == 400
