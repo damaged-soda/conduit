@@ -33,12 +33,31 @@ def _mksub(c: TestClient, name: str = "vendor-a", url: str | None = None) -> str
     return r.json()["id"]
 
 
+def test_meta_uses_runtime_env(monkeypatch):
+    monkeypatch.setenv("CONDUIT_VERSION", "v9.9.9")
+    monkeypatch.setenv("CONDUIT_DEPLOYED_AT", "2026-06-22T12:34:56Z")
+    c = _client()
+    assert c.get("/api/meta").json() == {
+        "version": "v9.9.9",
+        "deployed_at": "2026-06-22T12:34:56Z",
+    }
+
+
 def test_create_returns_opaque_id_and_lists_name():
     c = _client()
     sid = _mksub(c, "My VPN")
     sub = c.get("/api/subscriptions").json()[0]
     assert sub["id"] == sid and sub["name"] == "My VPN"
     assert sid != "My VPN" and "url" not in sub  # id 不透明、url 不泄露
+
+
+def test_subscription_detail_returns_url_for_editor_only():
+    c = _client()
+    sid = _mksub(c, "My VPN", "https://example/sub")
+    detail = c.get(f"/api/subscriptions/{sid}").json()
+    assert detail["url"] == "https://example/sub" and detail["has_url"] is True
+    listed = c.get("/api/subscriptions").json()[0]
+    assert "url" not in listed  # 列表仍不回显 secret URL
 
 
 def test_import_into_subscription_and_detail_nodes():
@@ -79,6 +98,14 @@ def test_patch_url_then_refresh():
     sid = _mksub(c, "v")  # 先没 url
     c.patch(f"/api/subscriptions/{sid}", json={"url": "https://e/sub"})
     assert c.post(f"/api/subscriptions/{sid}/refresh").json()["imported"] == 2
+
+
+def test_patch_can_clear_url():
+    c = _client()
+    sid = _mksub(c, "v", "https://e/sub")
+    assert c.patch(f"/api/subscriptions/{sid}", json={"url": None}).status_code == 200
+    detail = c.get(f"/api/subscriptions/{sid}").json()
+    assert detail["url"] is None and detail["has_url"] is False
 
 
 def test_delete_subscription_removes_nodes():
@@ -412,4 +439,7 @@ def test_tag_rejects_reserved_or_bad_region():
 
 
 def test_index_page():
-    assert _client().get("/").status_code == 200
+    r = _client().get("/")
+    assert r.status_code == 200
+    assert 'id="meta"' in r.text
+    assert "保存名字" not in r.text and "保存 URL" not in r.text
