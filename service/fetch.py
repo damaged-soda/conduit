@@ -15,9 +15,8 @@ def fetch_url(url: str, timeout: float = 20.0) -> str:
     """GET 一个订阅 URL，返回正文（跟随重定向，限大小）。失败抛异常，由调用方映射成 5xx。"""
     chunks: list[bytes] = []
     total = 0
-    with httpx.stream(
-        "GET", url, timeout=timeout, follow_redirects=True, headers={"user-agent": "conduit/0.0"}
-    ) as r:
+    headers = {"user-agent": "mihomo/1.18.3 conduit/0.0"}
+    with httpx.stream("GET", url, timeout=timeout, follow_redirects=True, headers=headers) as r:
         r.raise_for_status()
         for chunk in r.iter_bytes():
             total += len(chunk)

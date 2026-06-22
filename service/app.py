@@ -31,7 +31,7 @@ from .fetch import fetch_url
 
 class SubIn(BaseModel):
     name: str
-    type: str = "clash"
+    type: str = "auto"
     note: str = ""
     url: str | None = None
 
@@ -161,7 +161,7 @@ def _normalize_and_store(store: Store, sub: dict, raw: str) -> dict:
     try:
         nodes = normalize(raw, sub["type"], sub["id"])
     except (ValueError, TypeError, yaml.YAMLError):  # sanitized 400：不回显订阅内容 / parser 细节
-        raise HTTPException(400, "导入内容解析失败（请确认是合法的 clash 订阅）")
+        raise HTTPException(400, "导入内容解析失败（请确认是合法的 clash/URI/base64 订阅）")
     return {"imported": store.import_nodes(sub["id"], raw, nodes)}
 
 
@@ -441,7 +441,7 @@ async function renderDetail(){
   if(!sub){d.append(el('p','订阅不存在'));return}
   const name=input('名字',sub.name);
   const url=input(sub.has_url?'替换 URL（留空不改）':'设置 URL（http/https）');
-  const raw=document.createElement('textarea');raw.placeholder='或：把 clash 订阅内容贴这里';
+  const raw=document.createElement('textarea');raw.placeholder='或：把 clash YAML / URI / base64 订阅内容贴这里';
   const msg=el('span','');msg.className='msg';msg.id='msg';
 
   d.append(

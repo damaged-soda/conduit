@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import pathlib
 import sys
 
@@ -21,6 +23,10 @@ from conduit.render import render  # noqa: E402
 from test_config_invariants import DIRECT, all_violations  # noqa: E402
 
 FIXTURE = (HERE / "fixtures" / "sub.clash.yaml").read_text()
+
+
+def _b64(s: str) -> str:
+    return base64.urlsafe_b64encode(s.encode()).decode().rstrip("=")
 
 
 def test_normalize_extracts_proxies_drops_rules():
@@ -70,9 +76,60 @@ def test_vmess_ws_params_preserved():
     assert n.params["ws-opts"]["path"] == "/ray"  # 嵌套字段无损保留
 
 
+def test_normalize_uri_subscription_lines():
+    vmess = _b64(json.dumps({
+        "ps": "VM WS",
+        "add": "vm.example.com",
+        "port": "443",
+        "id": "uuid-1",
+        "aid": "0",
+        "scy": "auto",
+        "net": "ws",
+        "host": "cdn.example.com",
+        "path": "/ray",
+        "tls": "tls",
+        "sni": "vm.example.com",
+        "fp": "chrome",
+    }))
+    raw = "\n".join([
+        "ss://"
+        + _b64("aes-256-gcm:ss-pass")
+        + "@SS.Example.com:8388?plugin=obfs-local%3Bobfs%3Dtls%3Bobfs-host%3Dcdn.example.com#SS",
+        f"vmess://{vmess}",
+        "trojan://tj-pass@tj.example.com:443?sni=tj.example.com&type=ws&host=cdn.example.com&path=%2Fws#TJ",
+        "vless://uuid-2@vl.example.com:443?security=reality&sni=www.example.com&fp=chrome"
+        "&pbk=pubkey&sid=abcd&type=grpc&serviceName=svc&flow=xtls-rprx-vision#VL",
+        "hy2://hy-pass@hy.example.com:443?sni=hy.example.com&obfs=salamander"
+        "&obfs-password=obfs-pass#HY2",
+    ])
+
+    nodes = normalize(raw, "clash", "vendor-uri")
+    by_name = {n.raw_name: n for n in nodes}
+    assert set(by_name) == {"SS", "VM WS", "TJ", "VL", "HY2"}
+    assert by_name["SS"].access_id.endpoint.server == "ss.example.com"
+    assert by_name["SS"].params["plugin"] == "obfs"
+    assert by_name["VM WS"].params["ws-opts"]["headers"]["Host"] == "cdn.example.com"
+    assert by_name["TJ"].params["sni"] == "tj.example.com"
+    assert by_name["VL"].params["reality-opts"] == {"public-key": "pubkey", "short-id": "abcd"}
+    assert by_name["HY2"].params["obfs-password"] == "obfs-pass"
+
+
+def test_normalize_base64_wrapped_uri_subscription():
+    raw = "ss://" + _b64("aes-128-gcm:p") + "@s.example.com:8388#S"
+    nodes = normalize(base64.b64encode(raw.encode()).decode(), "base64", "vendor-b64")
+    assert len(nodes) == 1
+    assert nodes[0].raw_name == "S"
+    assert nodes[0].params["cipher"] == "aes-128-gcm"
+
+
 def test_unsupported_type_raises():
     with pytest.raises(ValueError):
-        normalize("x", "base64", "v")
+        normalize("x", "singbox", "v")
+
+
+def test_malformed_uri_raises_when_no_node_survives():
+    with pytest.raises(ValueError):
+        normalize("ss://not-a-valid-node", "uri", "v")
 
 
 def test_normalize_then_render_passes_invariants():

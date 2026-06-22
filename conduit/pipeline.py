@@ -21,7 +21,7 @@ def normalize(imports: list[dict]) -> list[Node]:
     """每个 import = {raw, type, id}：解析为统一 Node 列表，算两层身份，丢弃订阅自带规则。实现见 ingest.py。"""
     out: list[Node] = []
     for imp in imports:
-        out += _normalize_one(imp["raw"], imp.get("type", "clash"), imp.get("id", ""))
+        out += _normalize_one(imp["raw"], imp.get("type", "auto"), imp.get("id", ""))
     return out
 
 
