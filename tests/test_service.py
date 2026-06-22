@@ -500,4 +500,5 @@ def test_index_page():
     r = _client().get("/")
     assert r.status_code == 200
     assert 'id="meta"' in r.text
+    assert "SOURCE_MODES" in r.text and "导入文本" in r.text
     assert "保存名字" not in r.text and "保存 URL" not in r.text

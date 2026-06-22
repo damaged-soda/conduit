@@ -1,7 +1,7 @@
 """conduit-service：FastAPI + SQLite。订阅管理（主从式 CRUD）+ 节点池。core 仍是纯函数。
 
 订阅 = 命名的节点桶（id 内部不透明、name 可随意改）；来源二选一：① 基于链接（存 URL，按 URL 拉取）
-② 文件导入（贴内容）。网络抓取在服务侧（impure，见 service/fetch.py）；解析/身份是 core 纯函数。
+② 手动导入（文件/文本内容）。网络抓取在服务侧（impure，见 service/fetch.py）；解析/身份是 core 纯函数。
 TODO：tag、render+pull、定时刷新、认证、secret 加密。
 
 跑：`uvicorn --factory service.app:make_app`（DB 路径用 CONDUIT_DB，默认 conduit.db）。
@@ -438,8 +438,12 @@ li.sel{background:#eef;border-color:#88a}
 table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:3px 7px;font-size:12px;text-align:left}
 input,button,select,textarea{padding:5px;margin:2px 0;font-size:13px}
 input[type=text]{width:100%;box-sizing:border-box}
+input[type=file]{display:block}
 textarea{width:100%;height:110px;box-sizing:border-box}
 .row{margin:.6rem 0}.muted{color:#888;font-size:12px}.msg{color:#06c;font-size:12px}
+.source-picker{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.source-picker button{border:1px solid #bbb;background:#fff;cursor:pointer}
+.source-picker button.sel{background:#eef;border-color:#88a;font-weight:600}
 details{margin:3px 0;border:1px solid #e3e3e3;border-radius:6px}
 summary{cursor:pointer;font-weight:600;font-size:13px;padding:5px 8px;user-select:none}
 .nrow{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:3px 8px 3px 22px;font-size:12px;border-top:1px solid #f0f0f0}
@@ -459,11 +463,30 @@ summary{cursor:pointer;font-weight:600;font-size:13px;padding:5px 8px;user-selec
 </div>
 <script>
 // 全部数据走 textContent / DOM，避免订阅来的 raw_name 等造成 XSS
-let SUBS=[], SEL=null, NOPEN=new Set();  // NOPEN：记住展开的地区，re-render 时保留
+let SUBS=[], SEL=null, NOPEN=new Set(), MANUAL_MODE={};  // 记住展开地区 + 手动导入子模式
 function el(t,x){const e=document.createElement(t);if(x!=null)e.textContent=x;return e}
 function input(ph,val){const e=document.createElement('input');e.type='text';e.placeholder=ph||'';if(val!=null)e.value=val;return e}
 function btn(label,fn){const b=el('button',label);b.onclick=fn;return b}
 function row(...kids){const d=document.createElement('div');d.className='row';kids.forEach(k=>d.append(k));return d}
+const SOURCE_MODES=[['url','链接'],['file','文件'],['text','文本']];
+function sourcePicker(value,fn){
+  const box=document.createElement('div');box.className='source-picker';
+  const buttons=[];
+  const sync=()=>buttons.forEach(([v,b])=>b.className=v===value?'sel':'');
+  SOURCE_MODES.forEach(([v,label])=>{
+    const b=btn(label,()=>{value=v;sync();fn(v)});
+    buttons.push([v,b]);box.append(b);
+  });
+  sync();return box;
+}
+function fileInput(){
+  const f=document.createElement('input');f.type='file';f.accept='.yaml,.yml,.txt,.conf,.list';return f;
+}
+async function selectedFileText(f){
+  const file=f.files&&f.files[0];
+  if(!file)throw new Error('请选择订阅文件');
+  return file.text();
+}
 async function j(u,o){const r=await fetch(u,o);if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||r.status);return r.json()}
 function jpost(u,body){return j(u,{method:'POST',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined})}
 
@@ -471,7 +494,7 @@ async function loadSubs(){
   SUBS=await j('/api/subscriptions');
   const ul=document.getElementById('subs');
   ul.replaceChildren(...SUBS.map(s=>{
-    const src=s.source_type==='url'?'链接':'文件';
+    const src=s.source_type==='url'?'链接':'手动';
     const li=el('li',`${s.name||'(未命名)'} · ${src} · ${s.node_count}`);
     if(s.id===SEL)li.className='sel';
     li.onclick=()=>select(s.id);
@@ -492,11 +515,52 @@ function newSub(){SEL=null;loadSubs();renderNew();}
 
 function renderNew(){
   const d=document.getElementById('detail');d.replaceChildren();
-  const name=input('订阅名字（随意，可改）'), url=input('订阅 URL（留空=文件导入，http/https）');
+  let mode='url';
+  const name=input('订阅名字（随意，可改）'), url=input('订阅 URL（http/https）');
+  const file=fileInput();
+  const raw=document.createElement('textarea');raw.placeholder='把 clash YAML / URI / base64 订阅内容贴这里';
+  const msg=el('span','');msg.className='msg';msg.id='msg';
+  const urlRow=row(el('label','URL：'),url);
+  const fileRow=row(el('label','文件：'),file);
+  const textBox=document.createElement('div');textBox.append(el('div','文本内容：'),raw);
+  const create=btn('创建',async()=>{
+    create.disabled=true;msg.textContent='';
+    try{
+      let body={name:name.value,url:null}, importRaw=null;
+      if(mode==='url'){
+        const clean=url.value.trim();
+        if(!clean)throw new Error('请输入订阅 URL');
+        body.url=clean;
+      }else if(mode==='file'){
+        importRaw=await selectedFileText(file);
+      }else{
+        if(!raw.value.trim())throw new Error('请输入订阅内容');
+        importRaw=raw.value;
+      }
+      const r=await jpost('/api/subscriptions',body);
+      if(importRaw!=null){
+        MANUAL_MODE[r.id]=mode;
+        try{
+          const im=await jpost(`/api/subscriptions/${r.id}/import`,{raw:importRaw});
+          await select(r.id);setMsg('已创建并导入 '+im.imported+' 节点');
+        }catch(e){
+          await select(r.id);setMsg('导入失败: '+e.message);
+        }
+      }else{
+        await select(r.id);setMsg('已创建；可按 URL 刷新');
+      }
+    }catch(e){msg.textContent='创建失败: '+e.message}
+    finally{create.disabled=false}
+  });
+  const sync=()=>{urlRow.hidden=mode!=='url';fileRow.hidden=mode!=='file';textBox.hidden=mode!=='text';create.textContent=mode==='url'?'创建':'创建并导入'};
+  sync();
   d.append(el('h2','新建订阅'),
     row(el('label','名字：'),name),
-    row(el('label','URL：'),url),
-    row(btn('创建',async()=>{try{const r=await jpost('/api/subscriptions',{name:name.value,url:url.value||null});await select(r.id)}catch(e){alert('创建失败: '+e.message)}})),
+    row(el('label','来源：'),sourcePicker(mode,v=>{mode=v;sync()})),
+    urlRow,
+    fileRow,
+    textBox,
+    row(create,msg),
     el('p',null));
 }
 
@@ -505,25 +569,52 @@ async function renderDetail(){
   let sub=null;
   try{sub=await j(`/api/subscriptions/${SEL}`)}catch(e){d.append(el('p','订阅不存在'));return}
   const name=input('名字',sub.name||'');
-  const url=input('订阅 URL（清空后保存=文件导入，http/https）',sub.url||'');
+  const url=input('订阅 URL（http/https）',sub.url||'');
+  const file=fileInput();
   const raw=document.createElement('textarea');raw.placeholder='把 clash YAML / URI / base64 订阅内容贴这里';
   const msg=el('span','');msg.className='msg';msg.id='msg';
   const isUrl=sub.source_type==='url';
-  const refreshBtn=btn('🔄 按 URL 刷新',async()=>{try{const r=await jpost(`/api/subscriptions/${SEL}/refresh`);const n=r.imported;await select(SEL);setMsg('刷新：导入 '+n+' 节点')}catch(e){setMsg('刷新失败: '+e.message)}});
-  const deleteBtn=btn('🗑 删除订阅',async()=>{if(confirm('删除该订阅及其节点？')){await j(`/api/subscriptions/${SEL}`,{method:'DELETE'});SEL=null;await loadSubs();document.getElementById('detail').replaceChildren(el('p','已删除。'))}});
-  const importBtn=btn('导入文件',async()=>{try{const r=await jpost(`/api/subscriptions/${SEL}/import`,{raw:raw.value});const n=r.imported;await select(SEL);setMsg('导入 '+n+' 节点')}catch(e){setMsg('导入失败: '+e.message)}});
-  const saveBtn=btn('保存',async()=>{try{await patch({name:name.value,url:url.value.trim()||null});setMsg('已保存')}catch(e){setMsg('保存失败: '+e.message)}});
-  const controls=[saveBtn];if(isUrl)controls.push(refreshBtn);controls.push(msg);
+  let mode=isUrl?'url':(MANUAL_MODE[sub.id]||'file');
+  async function saveSource(){
+    const body={name:name.value};
+    if(mode==='url'){
+      const clean=url.value.trim();
+      if(!clean)throw new Error('请输入订阅 URL');
+      body.url=clean;
+    }else{
+      body.url=null;
+      MANUAL_MODE[SEL]=mode;
+    }
+    await j(`/api/subscriptions/${SEL}`,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    await loadSubs();
+  }
+  async function importManual(rawText){
+    await saveSource();
+    const r=await jpost(`/api/subscriptions/${SEL}/import`,{raw:rawText});
+    const n=r.imported;await select(SEL);setMsg('导入 '+n+' 节点');
+  }
+  const refreshBtn=btn('🔄 保存并按 URL 刷新',async()=>{try{await saveSource();const r=await jpost(`/api/subscriptions/${SEL}/refresh`);const n=r.imported;await select(SEL);setMsg('刷新：导入 '+n+' 节点')}catch(e){setMsg('刷新失败: '+e.message)}});
+  const deleteBtn=btn('🗑 删除订阅',async()=>{if(confirm('删除该订阅及其节点？')){await j(`/api/subscriptions/${SEL}`,{method:'DELETE'});delete MANUAL_MODE[SEL];SEL=null;await loadSubs();document.getElementById('detail').replaceChildren(el('p','已删除。'))}});
+  const importFileBtn=btn('导入文件',async()=>{try{await importManual(await selectedFileText(file))}catch(e){setMsg('导入失败: '+e.message)}});
+  const importTextBtn=btn('导入文本',async()=>{try{if(!raw.value.trim())throw new Error('请输入订阅内容');await importManual(raw.value)}catch(e){setMsg('导入失败: '+e.message)}});
+  const saveBtn=btn('保存',async()=>{try{await saveSource();await renderDetail();setMsg('已保存')}catch(e){setMsg('保存失败: '+e.message)}});
+  const sourceBox=document.createElement('div');
+  function renderSourceControls(){
+    sourceBox.replaceChildren();
+    if(mode==='url')sourceBox.append(row(el('label','URL：'),url),row(saveBtn,refreshBtn,msg));
+    else if(mode==='file')sourceBox.append(row(el('label','文件：'),file),row(saveBtn,importFileBtn,msg));
+    else sourceBox.append(el('div','文本导入：'),raw,row(saveBtn,importTextBtn,msg));
+  }
+  renderSourceControls();
 
   d.append(
     el('h2',sub.name||'(未命名)'),
-    el('div', `${sub.type} · ${sub.node_count} 节点 · 来源 ${isUrl?'链接':'文件'}`),
+    el('div', `${sub.type} · ${sub.node_count} 节点 · 来源 ${isUrl?'链接':'文件/文本'}`),
     row(el('label','名字：'),name),
-    row(el('label','URL：'),url),
-    row(...controls),
+    row(el('label','来源：'),sourcePicker(mode,v=>{mode=v;renderSourceControls();setMsg('')})),
+    sourceBox,
+    row(deleteBtn),
   );
-  if(isUrl)d.append(row(deleteBtn));
-  else d.append(el('div','文件导入：'), raw, row(importBtn,deleteBtn));
   const nbox=document.createElement('div');
   d.append(el('h3','节点 / 标签'), nbox);
   await loadNodes(nbox);
@@ -564,8 +655,6 @@ function regionNode(region,list,box,allR){
 async function setTag(aid,region,quarantined){
   await fetch('/api/nodes/'+encodeURIComponent(aid)+'/tag',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({region:region||null,quarantined:!!quarantined})});
 }
-
-async function patch(body){await j(`/api/subscriptions/${SEL}`,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify(body)});await loadSubs();await renderDetail();}
 
 async function loadSub(){
   const r=await j('/api/sub-token');
