@@ -25,6 +25,11 @@
 - 「必须直连」在 mihomo 里要**同时落到三处**，缺一不可：① 最高优先级 DIRECT 规则；② fake-ip 放行（进 `fake-ip-filter` / real-ip）；③ TUN 路由排除（`route-exclude-address`）。私有域名可能还需 `nameserver-policy` 指向直连 DNS。
 - validate 阶段必须检查这三处覆盖一致。
 
+## full 模式（TUN）必须项
+full（带 dns+tun）的配置除上面三处外，还有两条不变量，缺一即出事（实战踩过）：
+- **TUN 必须同时接管 IPv6**：`ipv6: true` + `dns.ipv6: true` + `tun.inet6-address`（auto-route 才会把 `::/0` 也指向 TUN）。否则系统 IPv6 默认路由仍在物理网卡，浏览器走 IPv6/HTTP3 会**绕过代理直连** → 出口变成本机真实地区 → 按区域封的站（如 claude.ai 看到 `loc=CN`）直接不可用。`route-exclude` 须含 IPv6 本地段（`::1`/`fc00::/7`（含 overlay ULA）/`fe80::/10`），保私有网/SSH 不断。
+- **DNS 必须有 `default-nameserver`（引导）**：含 `system` 任何环境可引导。否则 mihomo 没法做最初解析（连 DoH 服务器都解析不了）→ DNS 引导死锁 → 出网全断。
+
 ## 可用性目标
 - SLO 写清楚，别含糊：**新连接在节点被探测判定不健康后数秒内绕开**；**已建立的连接不迁移，由应用层重试**（mihomo 不会把在途连接搬到别的节点）。不承诺字面 < 1s、不承诺无感。
 - 落地参数：`fallback` 组 + `health-check` 的 `interval` / `timeout` / `lazy: false` / `expected-status` / `max-failed-times` 调到位；并定义**整组全挂时**的兜底行为。
