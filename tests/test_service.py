@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import base64
 import pathlib
 import sys
 
@@ -46,6 +47,16 @@ def test_import_into_subscription_and_detail_nodes():
     assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE}).json()["imported"] == 2
     assert len(c.get(f"/api/subscriptions/{sid}/nodes").json()) == 2
     assert "params" not in c.get(f"/api/subscriptions/{sid}/nodes").json()[0]  # 不泄露凭据
+
+
+def test_import_uri_base64_subscription_with_default_type():
+    c = _client()
+    sid = _mksub(c)
+    uri = "ss://" + base64.urlsafe_b64encode(b"aes-256-gcm:p").decode().rstrip("=") + "@s.example.com:8388#S"
+    raw = base64.b64encode(uri.encode()).decode()
+    assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": raw}).json()["imported"] == 1
+    node = c.get(f"/api/subscriptions/{sid}/nodes").json()[0]
+    assert node["raw_name"] == "S" and node["type"] == "ss"
 
 
 def test_refresh_fetches_url_and_imports():

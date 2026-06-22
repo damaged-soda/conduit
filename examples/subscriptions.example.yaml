@@ -2,7 +2,7 @@
 # 不写明文、不进 git；conduit 只认这个 schema，不认来源。
 subscriptions:
   - id: vendor-a
-    type: clash            # parser hint: clash | base64 | ...
+    type: auto             # parser hint: auto | clash | uri | base64
     url_ref: "subs/vendor-a/url"
     headers_ref: null      # 需要鉴权头时指向 secret
     fetch_interval: "30m"

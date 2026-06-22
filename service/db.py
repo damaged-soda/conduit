@@ -23,7 +23,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS subscriptions (
   id         TEXT PRIMARY KEY,                       -- 内部不透明 key（节点按它归属，稳定）
   name       TEXT NOT NULL DEFAULT '',               -- 显示名（用户可随意改）
-  type       TEXT NOT NULL DEFAULT 'clash',
+  type       TEXT NOT NULL DEFAULT 'auto',
   note       TEXT NOT NULL DEFAULT '',
   url        TEXT,                                   -- 基于链接拉取的 URL（含 token = secret，API 不返回）
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -81,7 +81,7 @@ class Store:
 
     # ---- subscriptions ----
 
-    def add_subscription(self, name: str, type: str = "clash", note: str = "", url: str | None = None) -> str:
+    def add_subscription(self, name: str, type: str = "auto", note: str = "", url: str | None = None) -> str:
         """新建订阅，返回自动生成的内部 id。"""
         sub_id = secrets.token_hex(8)
         with self._lock:
