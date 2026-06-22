@@ -108,12 +108,12 @@ class Store:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def update_subscription(self, sub_id: str, name: str | None = None, url: str | None = None) -> None:
-        """改名 / 改 URL（只更新非 None 字段；改名不动节点）。"""
+    def update_subscription(self, sub_id: str, name=_UNSET, url=_UNSET) -> None:
+        """改名 / 改 URL（只更新提供的字段；URL 可清空为 NULL；改名不动节点）。"""
         with self._lock:
-            if name is not None:
+            if name is not _UNSET:
                 self._conn.execute("UPDATE subscriptions SET name = ? WHERE id = ?", (name, sub_id))
-            if url is not None:
+            if url is not _UNSET:
                 self._conn.execute("UPDATE subscriptions SET url = ? WHERE id = ?", (url, sub_id))
             self._conn.commit()
 

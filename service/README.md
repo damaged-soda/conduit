@@ -22,7 +22,8 @@ uvicorn --factory service.app:make_app   # DB 路径用 CONDUIT_DB，默认 cond
 
 ## 现在有什么
 **订阅 / 节点**
-- `POST /api/subscriptions`、`GET /api/subscriptions`、`POST /{id}/import`（文件导入）、`POST /{id}/refresh`（URL 拉取，URL 不回显）
+- `GET /api/meta`（版本 / 最近部署时间）
+- `POST /api/subscriptions`、`GET /api/subscriptions`（列表不回显 URL）、`GET/PATCH /api/subscriptions/{id}`（管理页编辑用，回显 URL）、`POST /{id}/import`（文件导入）、`POST /{id}/refresh`（URL 拉取）
 - 导入格式：Clash/Mihomo YAML、URI 行订阅（ss/vmess/trojan/vless/hysteria/hysteria2）、整份 base64 包裹的 URI/YAML。
 - `GET /api/nodes`（不含凭据）
 

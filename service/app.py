@@ -9,10 +9,14 @@ TODO：tag、render+pull、定时刷新、认证、secret 加密。
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from importlib import metadata
 import ipaddress
 import os
+import pathlib
 import re
 import secrets
+import tomllib
 from typing import Callable
 
 import yaml
@@ -75,6 +79,29 @@ _DOMAINPAT = re.compile(r"[A-Za-z0-9_.*!+-]{1,100}")  # 显式域名匹配（无
 _DOMAIN_SUFFIX = re.compile(r"[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*")
 _PLAINVAL = re.compile(r"[^,\n\r]{1,100}")  # 进程名等（无逗号换行）
 _PORTPAT = re.compile(r"\d{1,5}(-\d{1,5})?")
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _package_version() -> str:
+    try:
+        return metadata.version("conduit")
+    except metadata.PackageNotFoundError:
+        try:
+            pyproject = pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml"
+            data = tomllib.loads(pyproject.read_text())
+            return str(data.get("project", {}).get("version") or "unknown")
+        except (OSError, tomllib.TOMLDecodeError):
+            return "unknown"
+
+
+def _runtime_meta() -> dict:
+    return {
+        "version": os.environ.get("CONDUIT_VERSION") or _package_version(),
+        "deployed_at": os.environ.get("CONDUIT_DEPLOYED_AT") or _utc_now(),
+    }
 
 
 def _validate_matchers(r) -> None:
@@ -167,7 +194,8 @@ def _normalize_and_store(store: Store, sub: dict, raw: str) -> dict:
 
 def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_url) -> FastAPI:
     store = Store(db_path)
-    app = FastAPI(title="conduit-service", version="0.0.0")
+    runtime_meta = _runtime_meta()
+    app = FastAPI(title="conduit-service", version=runtime_meta["version"])
 
     def _require(sub_id: str) -> dict:
         sub = store.get_subscription(sub_id)
@@ -186,6 +214,10 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
                         "region": t.get("region") or auto, "quarantined": t.get("quarantined", False)})
         return out
 
+    @app.get("/api/meta")
+    def get_meta():
+        return runtime_meta
+
     @app.post("/api/subscriptions")
     def add_subscription(body: SubIn):
         _check_url(body.url)
@@ -195,11 +227,29 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
     def list_subscriptions():
         return store.list_subscriptions()
 
+    @app.get("/api/subscriptions/{sub_id}")
+    def get_subscription(sub_id: str):
+        sub = _require(sub_id)
+        return {
+            "id": sub["id"],
+            "name": sub["name"],
+            "type": sub["type"],
+            "created_at": sub["created_at"],
+            "url": sub.get("url"),
+            "has_url": bool(sub.get("url")),
+            "node_count": len(store.list_nodes(sub_id)),
+        }
+
     @app.patch("/api/subscriptions/{sub_id}")
     def update_subscription(sub_id: str, body: SubPatch):
         _require(sub_id)
-        _check_url(body.url)
-        store.update_subscription(sub_id, body.name, body.url)
+        updates = {}
+        if "name" in body.model_fields_set:
+            updates["name"] = body.name or ""
+        if "url" in body.model_fields_set:
+            _check_url(body.url)
+            updates["url"] = (body.url or "").strip() or None
+        store.update_subscription(sub_id, **updates)
         return {"ok": True}
 
     @app.delete("/api/subscriptions/{sub_id}")
@@ -372,6 +422,9 @@ _PAGE = """<!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><title>conduit</title>
 <style>
 body{font-family:system-ui,sans-serif;max-width:1000px;margin:1.5rem auto;padding:0 1rem}
+.head{display:flex;justify-content:space-between;align-items:flex-end;gap:1rem;flex-wrap:wrap}
+.head h1{margin:.2rem 0}
+.meta{text-align:right;line-height:1.5}
 .wrap{display:flex;gap:1.5rem;align-items:flex-start}
 .left{width:260px;flex:none}
 .right{flex:1;min-width:0}
@@ -390,7 +443,7 @@ summary{cursor:pointer;font-weight:600;font-size:13px;padding:5px 8px;user-selec
 .nctl{display:flex;gap:6px;align-items:center;flex:none}
 </style></head>
 <body>
-<h1>conduit</h1>
+<div class="head"><h1>conduit</h1><div id="meta" class="muted meta"></div></div>
 <div id="sub" class="muted" style="margin-bottom:1rem"></div>
 <div id="policy" class="muted" style="margin-bottom:1rem"></div>
 <div class="wrap">
@@ -421,6 +474,13 @@ async function loadSubs(){
   }));
 }
 function setMsg(t){const m=document.getElementById('msg');if(m)m.textContent=t||''}
+function fmtTime(t){try{return new Intl.DateTimeFormat('zh-CN',{dateStyle:'medium',timeStyle:'medium'}).format(new Date(t))}catch(e){return t}}
+async function loadMeta(){
+  try{
+    const m=await j('/api/meta');
+    document.getElementById('meta').replaceChildren(el('div','版本 '+m.version),el('div','最近部署 '+fmtTime(m.deployed_at)));
+  }catch(e){document.getElementById('meta').textContent='版本未知'}
+}
 
 async function select(id){SEL=id;await loadSubs();await renderDetail();}
 function newSub(){SEL=null;loadSubs();renderNew();}
@@ -436,25 +496,25 @@ function renderNew(){
 }
 
 async function renderDetail(){
-  const sub=SUBS.find(s=>s.id===SEL);
   const d=document.getElementById('detail');d.replaceChildren();
-  if(!sub){d.append(el('p','订阅不存在'));return}
-  const name=input('名字',sub.name);
-  const url=input(sub.has_url?'替换 URL（留空不改）':'设置 URL（http/https）');
+  let sub=null;
+  try{sub=await j(`/api/subscriptions/${SEL}`)}catch(e){d.append(el('p','订阅不存在'));return}
+  const name=input('名字',sub.name||'');
+  const url=input('订阅 URL（http/https）',sub.url||'');
   const raw=document.createElement('textarea');raw.placeholder='或：把 clash YAML / URI / base64 订阅内容贴这里';
   const msg=el('span','');msg.className='msg';msg.id='msg';
 
   d.append(
     el('h2',sub.name||'(未命名)'),
     el('div', `${sub.type} · ${sub.node_count} 节点 · URL ${sub.has_url?'已设置':'未设置'}`),
-    row(el('label','名字：'),name,btn('保存名字',async()=>{await patch({name:name.value});setMsg('已改名')})),
-    row(el('label','URL：'),url,
-        btn('保存 URL',async()=>{if(!url.value){setMsg('URL 留空，未改');return}await patch({url:url.value});setMsg('URL 已更新')}),
-        btn('🔄 按 URL 刷新',async()=>{try{const r=await jpost(`/api/subscriptions/${SEL}/refresh`);const n=r.imported;await select(SEL);setMsg('刷新：导入 '+n+' 节点')}catch(e){setMsg('刷新失败: '+e.message)}})),
+    row(el('label','名字：'),name),
+    row(el('label','URL：'),url),
+    row(btn('保存',async()=>{try{await patch({name:name.value,url:url.value.trim()||null});setMsg('已保存')}catch(e){setMsg('保存失败: '+e.message)}}),
+        btn('🔄 按 URL 刷新',async()=>{try{const r=await jpost(`/api/subscriptions/${SEL}/refresh`);const n=r.imported;await select(SEL);setMsg('刷新：导入 '+n+' 节点')}catch(e){setMsg('刷新失败: '+e.message)}}),
+        msg),
     el('div','文件导入：'), raw,
     row(btn('导入文件',async()=>{try{const r=await jpost(`/api/subscriptions/${SEL}/import`,{raw:raw.value});const n=r.imported;await select(SEL);setMsg('导入 '+n+' 节点')}catch(e){setMsg('导入失败: '+e.message)}}),
-        btn('🗑 删除订阅',async()=>{if(confirm('删除该订阅及其节点？')){await j(`/api/subscriptions/${SEL}`,{method:'DELETE'});SEL=null;await loadSubs();document.getElementById('detail').replaceChildren(el('p','已删除。'))}}),
-        msg),
+        btn('🗑 删除订阅',async()=>{if(confirm('删除该订阅及其节点？')){await j(`/api/subscriptions/${SEL}`,{method:'DELETE'});SEL=null;await loadSubs();document.getElementById('detail').replaceChildren(el('p','已删除。'))}})),
   );
   const nbox=document.createElement('div');
   d.append(el('h3','节点 / 标签'), nbox);
@@ -584,7 +644,7 @@ function routeEditor(r,i){
   d.append(row(el('span','加匹配:'),ks,holder,add));
   return d;
 }
-loadSubs(); loadSub(); loadPolicy();
+loadMeta(); loadSubs(); loadSub(); loadPolicy();
 </script>
 </body></html>
 """
