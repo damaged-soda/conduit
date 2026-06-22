@@ -73,6 +73,13 @@ def test_full_dns_configurable():
     assert cfg["fallback"] == ["8.8.8.8"]
 
 
+def test_full_mode_captures_ipv6():
+    cfg = build_subscription([_node("🇭🇰 HK 01")], {}, full=True)
+    assert cfg["ipv6"] is True and cfg["dns"]["ipv6"] is True
+    assert cfg["tun"]["inet6-address"]  # TUN 接管 IPv6（堵 IPv6 leak）
+    assert "fc00::/7" in cfg["tun"]["route-exclude-address"]  # 本地/tailnet IPv6 仍直连 → SSH 不断
+
+
 def test_custom_final_group():
     rules = build_subscription([_node("🇯🇵 JP 01")], {}, policy={"final": "JP"})["rules"]
     assert rules[-1] == "MATCH,JP"

@@ -221,7 +221,9 @@ def build_subscription(
         pdns = policy.get("dns", {})
         dns = {
             "enable": True,
-            "ipv6": False,
+            # ipv6:true + tun.inet6-address：必须让 TUN 同时接管 IPv6，否则系统 IPv6 默认路由仍在物理网卡上，
+            # 浏览器优先走 IPv6/HTTP3 会**绕过代理直连**（IPv6 leak）→ 出口变成本地真实地区（如 CN）→ claude.ai 等按区域封。
+            "ipv6": True,
             "enhanced-mode": "fake-ip",
             "fake-ip-range": "198.18.0.1/16",
             # default-nameserver（引导 DNS）必须有：否则连 DoH 服务器都没法解析 → 整个 DNS 瘫、出网断。
@@ -236,13 +238,17 @@ def build_subscription(
         if nsp:  # 如 {'+.ts.net': '100.100.100.100'} —— tailnet 走 MagicDNS
             dns["nameserver-policy"] = nsp
         cfg["dns"] = dns
+        cfg["ipv6"] = True  # 全局开 IPv6，配合 tun.inet6-address 让 TUN 接管 IPv6，堵住 IPv6 leak
         cfg["tun"] = {
             "enable": True,
             "stack": "system",
             "auto-route": True,
             "auto-detect-interface": True,
             "strict-route": True,
+            # 给 TUN 一个 IPv6 地址，auto-route 才会把 IPv6 默认路由 (::/0) 也指向 TUN → IPv6 流量进代理。
+            "inet6-address": ["fdfe:dcba:9876::1/126"],
             "dns-hijack": ["any:53", "tcp://any:53"],
+            # route-exclude 已含 ::1 / fc00::/7（含 tailscale ULA IPv6）/ fe80::/10 → 本地+tailnet IPv6 仍直连，SSH 不断。
             "route-exclude-address": _BASELINE_DIRECT + list(direct.get("ip_cidr", [])) + d_ips,
         }
 
