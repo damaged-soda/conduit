@@ -12,6 +12,7 @@ secrets/*
 __pycache__/
 *.pyc
 .venv/
+*.egg-info/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/

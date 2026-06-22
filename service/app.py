@@ -1,6 +1,6 @@
 """conduit-service：FastAPI + SQLite。订阅管理（主从式 CRUD）+ 节点池。core 仍是纯函数。
 
-订阅 = 命名的节点桶（id 内部不透明、name 可随意改）；两种摄入：① 基于链接（存 URL，按 URL 拉取）
+订阅 = 命名的节点桶（id 内部不透明、name 可随意改）；来源二选一：① 基于链接（存 URL，按 URL 拉取）
 ② 文件导入（贴内容）。网络抓取在服务侧（impure，见 service/fetch.py）；解析/身份是 core 纯函数。
 TODO：tag、render+pull、定时刷新、认证、secret 加密。
 
@@ -184,12 +184,12 @@ def _with_mesh_bypass(policy: dict) -> dict:
     return out
 
 
-def _normalize_and_store(store: Store, sub: dict, raw: str) -> dict:
+def _normalize_and_store(store: Store, sub: dict, raw: str, source_type: str) -> dict:
     try:
         nodes = normalize(raw, sub["type"], sub["id"])
     except (ValueError, TypeError, yaml.YAMLError):  # sanitized 400：不回显订阅内容 / parser 细节
         raise HTTPException(400, "导入内容解析失败（请确认是合法的 clash/URI/base64 订阅）")
-    return {"imported": store.import_nodes(sub["id"], raw, nodes)}
+    return {"imported": store.import_nodes(sub["id"], raw, nodes, source_type)}
 
 
 def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_url) -> FastAPI:
@@ -234,6 +234,7 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
             "id": sub["id"],
             "name": sub["name"],
             "type": sub["type"],
+            "source_type": sub.get("source_type", "url" if sub.get("url") else "file"),
             "created_at": sub["created_at"],
             "url": sub.get("url"),
             "has_url": bool(sub.get("url")),
@@ -278,18 +279,21 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
 
     @app.post("/api/subscriptions/{sub_id}/import")
     def import_subscription(sub_id: str, body: ImportIn):
-        return _normalize_and_store(store, _require(sub_id), body.raw)
+        sub = _require(sub_id)
+        if sub.get("source_type") == "url" or sub.get("url"):
+            raise HTTPException(400, "链接来源订阅请用 URL 刷新；如需文件导入，先清空 URL")
+        return _normalize_and_store(store, sub, body.raw, "file")
 
     @app.post("/api/subscriptions/{sub_id}/refresh")
     def refresh_subscription(sub_id: str):
         sub = _require(sub_id)
-        if not sub.get("url"):
-            raise HTTPException(400, "该订阅没有 url，请用文件导入")
+        if sub.get("source_type") != "url" or not sub.get("url"):
+            raise HTTPException(400, "文件来源订阅没有 URL，请用文件导入")
         try:
             raw = fetcher(sub["url"])
         except Exception:  # 网络/HTTP 失败 —— 不回显 url / 细节
             raise HTTPException(502, "拉取订阅 URL 失败")
-        return _normalize_and_store(store, sub, raw)
+        return _normalize_and_store(store, sub, raw, "url")
 
     @app.get("/api/nodes")
     def list_nodes():
@@ -467,7 +471,8 @@ async function loadSubs(){
   SUBS=await j('/api/subscriptions');
   const ul=document.getElementById('subs');
   ul.replaceChildren(...SUBS.map(s=>{
-    const li=el('li',`${s.name||'(未命名)'} · ${s.node_count}`);
+    const src=s.source_type==='url'?'链接':'文件';
+    const li=el('li',`${s.name||'(未命名)'} · ${src} · ${s.node_count}`);
     if(s.id===SEL)li.className='sel';
     li.onclick=()=>select(s.id);
     return li;
@@ -487,7 +492,7 @@ function newSub(){SEL=null;loadSubs();renderNew();}
 
 function renderNew(){
   const d=document.getElementById('detail');d.replaceChildren();
-  const name=input('订阅名字（随意，可改）'), url=input('订阅 URL（可选，http/https）');
+  const name=input('订阅名字（随意，可改）'), url=input('订阅 URL（留空=文件导入，http/https）');
   d.append(el('h2','新建订阅'),
     row(el('label','名字：'),name),
     row(el('label','URL：'),url),
@@ -500,22 +505,25 @@ async function renderDetail(){
   let sub=null;
   try{sub=await j(`/api/subscriptions/${SEL}`)}catch(e){d.append(el('p','订阅不存在'));return}
   const name=input('名字',sub.name||'');
-  const url=input('订阅 URL（http/https）',sub.url||'');
-  const raw=document.createElement('textarea');raw.placeholder='或：把 clash YAML / URI / base64 订阅内容贴这里';
+  const url=input('订阅 URL（清空后保存=文件导入，http/https）',sub.url||'');
+  const raw=document.createElement('textarea');raw.placeholder='把 clash YAML / URI / base64 订阅内容贴这里';
   const msg=el('span','');msg.className='msg';msg.id='msg';
+  const isUrl=sub.source_type==='url';
+  const refreshBtn=btn('🔄 按 URL 刷新',async()=>{try{const r=await jpost(`/api/subscriptions/${SEL}/refresh`);const n=r.imported;await select(SEL);setMsg('刷新：导入 '+n+' 节点')}catch(e){setMsg('刷新失败: '+e.message)}});
+  const deleteBtn=btn('🗑 删除订阅',async()=>{if(confirm('删除该订阅及其节点？')){await j(`/api/subscriptions/${SEL}`,{method:'DELETE'});SEL=null;await loadSubs();document.getElementById('detail').replaceChildren(el('p','已删除。'))}});
+  const importBtn=btn('导入文件',async()=>{try{const r=await jpost(`/api/subscriptions/${SEL}/import`,{raw:raw.value});const n=r.imported;await select(SEL);setMsg('导入 '+n+' 节点')}catch(e){setMsg('导入失败: '+e.message)}});
+  const saveBtn=btn('保存',async()=>{try{await patch({name:name.value,url:url.value.trim()||null});setMsg('已保存')}catch(e){setMsg('保存失败: '+e.message)}});
+  const controls=[saveBtn];if(isUrl)controls.push(refreshBtn);controls.push(msg);
 
   d.append(
     el('h2',sub.name||'(未命名)'),
-    el('div', `${sub.type} · ${sub.node_count} 节点 · URL ${sub.has_url?'已设置':'未设置'}`),
+    el('div', `${sub.type} · ${sub.node_count} 节点 · 来源 ${isUrl?'链接':'文件'}`),
     row(el('label','名字：'),name),
     row(el('label','URL：'),url),
-    row(btn('保存',async()=>{try{await patch({name:name.value,url:url.value.trim()||null});setMsg('已保存')}catch(e){setMsg('保存失败: '+e.message)}}),
-        btn('🔄 按 URL 刷新',async()=>{try{const r=await jpost(`/api/subscriptions/${SEL}/refresh`);const n=r.imported;await select(SEL);setMsg('刷新：导入 '+n+' 节点')}catch(e){setMsg('刷新失败: '+e.message)}}),
-        msg),
-    el('div','文件导入：'), raw,
-    row(btn('导入文件',async()=>{try{const r=await jpost(`/api/subscriptions/${SEL}/import`,{raw:raw.value});const n=r.imported;await select(SEL);setMsg('导入 '+n+' 节点')}catch(e){setMsg('导入失败: '+e.message)}}),
-        btn('🗑 删除订阅',async()=>{if(confirm('删除该订阅及其节点？')){await j(`/api/subscriptions/${SEL}`,{method:'DELETE'});SEL=null;await loadSubs();document.getElementById('detail').replaceChildren(el('p','已删除。'))}})),
+    row(...controls),
   );
+  if(isUrl)d.append(row(deleteBtn));
+  else d.append(el('div','文件导入：'), raw, row(importBtn,deleteBtn));
   const nbox=document.createElement('div');
   d.append(el('h3','节点 / 标签'), nbox);
   await loadNodes(nbox);
