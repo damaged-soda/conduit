@@ -78,6 +78,25 @@ def _fallback_group(name: str, proxies: list[str]) -> dict:
     }
 
 
+def _url_test_group(name: str, proxies: list[str], tolerance: int = 200, hidden: bool = False) -> dict:
+    """一个 url-test 组（按延迟自动选优；tolerance 避免小抖动频繁切换）。"""
+    group = {
+        "name": name,
+        "type": "url-test",
+        "proxies": proxies,
+        "url": _HEALTH_URL,
+        "interval": 60,
+        "timeout": 2000,
+        "lazy": False,
+        "expected-status": "204",
+        "tolerance": tolerance,
+        "max-failed-times": 1,
+    }
+    if hidden:
+        group["hidden"] = True
+    return group
+
+
 def _node_to_proxy(n: Node, name: str) -> dict:
     ep = n.access_id.endpoint
     safe = {k: v for k, v in (n.params or {}).items() if k not in _CORE_KEYS}  # params 不得覆盖核心身份
@@ -191,7 +210,7 @@ def build_subscription(
 
     分组结构（地区分组 + 顶层选择）：
       - `PROXY` (select)：顶层手动选 [AUTO, <各地区>]，默认 AUTO；规则只引用组名。
-      - `AUTO` (fallback)：所有非隔离节点，全局故障转移。
+      - `AUTO` (fallback)：优先走隐藏的 `AUTO-FAST` url-test(tolerance=200)，再用原始节点兜底。
       - 每个 region 一个 fallback 组。
 
     tags：`{access_id: {"region": override|None, "quarantined": bool}}`（service 传入）。隔离的剔除；
@@ -272,7 +291,7 @@ def build_subscription(
             region_order.append(r)
 
     nodes_only = [n for n, _ in active]
-    names = _assign_names(nodes_only, extra_reserved={"AUTO", *region_order})
+    names = _assign_names(nodes_only, extra_reserved={"AUTO", "AUTO-FAST", *region_order})
     cfg["proxies"] = [_node_to_proxy(n, nm) for n, nm in zip(nodes_only, names)]
 
     by_region: dict[str, list[str]] = {}
@@ -280,7 +299,8 @@ def build_subscription(
         by_region.setdefault(r, []).append(nm)
 
     groups: list[dict] = [{"name": "PROXY", "type": "select", "proxies": ["AUTO", *region_order]}]
-    groups.append(_fallback_group("AUTO", names))
+    groups.append(_fallback_group("AUTO", ["AUTO-FAST", *names]))
+    groups.append(_url_test_group("AUTO-FAST", names, hidden=True))
     groups += [_fallback_group(r, by_region[r]) for r in region_order]
     cfg["proxy-groups"] = groups
 

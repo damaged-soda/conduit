@@ -33,16 +33,27 @@ out=$(texec curl -s --max-time 8 -x http://mihomo:7890 http://172.28.0.5:5678) \
 echo "$out" | grep -q direct || fail "私网目标返回异常：$out"
 
 echo "== 故障切换：kill 当前选中的 upstream，断言选中真的切换 + 仍通 =="
-# PROXY 是 select(默认→AUTO)，实际选节点的是 AUTO(fallback) 组 → 读 AUTO.now
-sel() { texec curl -s http://mihomo:9090/proxies/AUTO | "${PYTHON:-python3}" -c "import sys,json;print(json.load(sys.stdin)['now'])"; }
-now=$(sel); echo "切换前选中：$now"
+# PROXY 是 select(默认→AUTO)。AUTO 是 fallback 外壳，优先走隐藏的 AUTO-FAST(url-test)，再回退原始节点。
+# 停掉当前实际 upstream 后，echo-proxied 仍通（它只在 backnet，mihomo 必须经另一个 upstream 才能到）。
+group_now() { texec curl -s "http://mihomo:9090/proxies/$1" | "${PYTHON:-python3}" -c "import sys,json;print(json.load(sys.stdin)['now'])"; }
+selected_upstream() {
+  local n
+  n="$(group_now AUTO)"
+  case "$n" in
+    upstream-*) echo "$n" ;;
+    *) group_now "$n" ;;
+  esac
+}
+now=$(selected_upstream); echo "切换前实际 upstream：$now"
 compose stop "$now" >/dev/null
 sleep 12   # > health-check interval(10s)，让 mihomo 标记其不健康
-now2=$(sel)
-[ "$now2" != "$now" ] || fail "故障切换未发生：选中节点仍是 $now"
-out=$(texec curl -s --max-time 8 -x http://mihomo:7890 http://echo-proxied:5678) \
-  || fail "切换后经代理访问失败"
+out=""
+for i in $(seq 1 8); do
+  out=$(texec curl -s --max-time 8 -x http://mihomo:7890 http://echo-proxied:5678) && break
+  sleep 1
+done
+[ -n "$out" ] || fail "切换后经代理访问失败"
 echo "$out" | grep -q proxied || fail "切换后返回异常：$out"
-echo "切换：$now → $now2"
+echo "切换后 AUTO.now：$(group_now AUTO)"
 
 echo "PASS: 域名→代理、私网→直连(rule#0 兜底)、故障切换 全过"

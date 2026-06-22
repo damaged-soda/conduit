@@ -59,7 +59,7 @@ mihomo health-check → 指标存储 → 生成器读「过去 N 时长不健康
 - **部署侧 mesh DNS 输入**：调用方可通过 `CONDUIT_MESH_DOMAIN_SUFFIXES` 注入私有 mesh / MagicDNS 后缀；需要专用解析器时用 `CONDUIT_MESH_DNS_SERVER` 生成 `nameserver-policy`。这些运行时合入 policy，不写 DB，不把具体 tailnet 名固化进 conduit。
 
 ## 分组 + 订阅输出（已落地）
-- **地区分组**(`conduit/tags.py`)：`region_of` **文本关键词优先、旗帜 emoji 兜底**(机场常把台湾标 🇨🇳)；render 按 region 分组 = `PROXY`(select:[AUTO,各地区]) + `AUTO`(fallback) + 每地区一个 fallback 组。标签按 access_id 存 DB、跟节点走。
+- **地区分组**(`conduit/tags.py`)：`region_of` **文本关键词优先、旗帜 emoji 兜底**(机场常把台湾标 🇨🇳)；render 按 region 分组 = `PROXY`(select:[AUTO,各地区]) + `AUTO`(fallback 外壳：优先隐藏 `AUTO-FAST` url-test, tolerance=200，再用原始节点兜底) + 每地区一个 fallback 组。标签按 access_id 存 DB、跟节点走。
 - **服务以订阅形态下发**：`conduit-service` 把节点池+分组+规则渲成 clash 订阅 `GET /sub/clash?token=&full=`；`pure` 纯净、`full` 加 fake-ip dns + tun（full 模式必须项见 [CONSTRAINTS.md](CONSTRAINTS.md)）。clash-verge/mihomo 直接订阅，等价 `fetch→tag→render` 流水线的产物。
 
 ## 目录
