@@ -18,12 +18,13 @@ CONDUIT_BIND=<rig 私有网 IP> docker compose -f deploy/compose.yaml up -d
 pip install -e '.[service]'
 uvicorn --factory service.app:make_app   # DB 路径用 CONDUIT_DB，默认 conduit.db
 ```
-打开 http://127.0.0.1:8000 ：建订阅 → 贴 clash/URI/base64 订阅内容导入 → 看节点池 → 给节点打地区标签 → 编辑分流策略 → 复制订阅链接导进 clash-verge/mihomo。
+打开 http://127.0.0.1:8000 ：建订阅（URL 来源或文件来源二选一）→ 导入/刷新 → 看节点池 → 给节点打地区标签 → 编辑分流策略 → 复制订阅链接导进 clash-verge/mihomo。
 
 ## 现在有什么
 **订阅 / 节点**
 - `GET /api/meta`（版本 / 最近部署时间）
-- `POST /api/subscriptions`、`GET /api/subscriptions`（列表不回显 URL）、`GET/PATCH /api/subscriptions/{id}`（管理页编辑用，回显 URL）、`POST /{id}/import`（文件导入）、`POST /{id}/refresh`（URL 拉取）
+- `POST /api/subscriptions`、`GET /api/subscriptions`（列表不回显 URL，只给 `source_type`/`has_url`）、`GET/PATCH /api/subscriptions/{id}`（管理页编辑用，回显 URL）、`POST /{id}/import`（文件来源导入）、`POST /{id}/refresh`（URL 来源拉取）
+- 来源模型：`subscriptions.source_type` 为 `file|url`，当前来源二选一；`url` 来源必须有 URL 且只能刷新，`file` 来源无 URL 且只能手动导入。`imports` 只记录每次 raw 快照及其来源类型，不代表第二个活动来源。
 - 导入格式：Clash/Mihomo YAML、URI 行订阅（ss/vmess/trojan/vless/hysteria/hysteria2）、整份 base64 包裹的 URI/YAML。
 - `GET /api/nodes`（不含凭据）
 
@@ -44,7 +45,7 @@ uvicorn --factory service.app:make_app   # DB 路径用 CONDUIT_DB，默认 cond
 `CONDUIT_MESH_DNS_SERVER=100.100.100.100`。这些值会运行时合入 policy：生成 DIRECT 规则、
 fake-ip 放行和 `nameserver-policy`，包括已有自定义 policy 的场景。conduit 不内置具体 tailnet 名。
 
-存储：`service/db.py`（SQLite）：`subscriptions/imports/nodes` + `meta`（key=`policy` 存自定义策略 JSON）+ 节点标签。⚠️ 含明文凭据 = secret 载体，别对公网暴露、别进 git。
+存储：`service/db.py`（SQLite）：`subscriptions(source_type=file|url)/imports/nodes` + `meta`（key=`policy` 存自定义策略 JSON）+ 节点标签。⚠️ 含明文凭据 = secret 载体，别对公网暴露、别进 git。
 
 ⚠️ **暂无认证** —— 只在 `127.0.0.1` / tailnet（Tailscale ACL）下可接受，**别裸绑 0.0.0.0**（认证归 later）。
 

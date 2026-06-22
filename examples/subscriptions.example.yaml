@@ -1,9 +1,14 @@
-# 订阅来源清单（结构化）。url / headers 这类敏感值用 *_ref 指向外部 secret store，
-# 不写明文、不进 git；conduit 只认这个 schema，不认来源。
+# 订阅来源清单（结构化）。source_type 决定 url/path 二选一；
+# url / headers 这类敏感值用 *_ref 指向外部 secret store，不写明文、不进 git。
 subscriptions:
   - id: vendor-a
+    source_type: url        # url | file
     type: auto             # parser hint: auto | clash | uri | base64
     url_ref: "subs/vendor-a/url"
     headers_ref: null      # 需要鉴权头时指向 secret
     fetch_interval: "30m"
     source_trust: normal   # 可选，先 later：normal | low
+  - id: vendor-b-static
+    source_type: file
+    type: auto
+    path_ref: "subs/vendor-b/latest.yaml"

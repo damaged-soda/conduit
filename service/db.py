@@ -2,8 +2,8 @@
 
 三张表：
 - subscriptions：**id 内部不透明 key（自动生成，稳定，节点按它归属）**；name 是可随意改的显示名；
-  type / note / url（含 token = secret，API 不返回）。
-- imports：每次导入的原始内容（含凭据）+ 节点数 + 时间。
+  type / note / source_type(file|url) / url（含 token = secret，API 不返回；file 来源无 url）。
+- imports：每次导入的原始内容（含凭据）+ 来源类型 + 节点数 + 时间。
 - nodes：节点池，按 access_id 去重，sub_id 指向 subscriptions.id（稳定，改名不影响）。
 
 ⚠️ nodes/imports/subscriptions.url 含明文凭据 → 这个 DB 是 secret 载体：访问控制、别对公网暴露、别进 git。
@@ -25,13 +25,19 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   name       TEXT NOT NULL DEFAULT '',               -- 显示名（用户可随意改）
   type       TEXT NOT NULL DEFAULT 'auto',
   note       TEXT NOT NULL DEFAULT '',
+  source_type TEXT NOT NULL DEFAULT 'file' CHECK (source_type IN ('file', 'url')),
   url        TEXT,                                   -- 基于链接拉取的 URL（含 token = secret，API 不返回）
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK (
+    (source_type = 'file' AND (url IS NULL OR url = '')) OR
+    (source_type = 'url' AND url IS NOT NULL AND url != '')
+  )
 );
 CREATE TABLE IF NOT EXISTS imports (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   sub_id     TEXT NOT NULL REFERENCES subscriptions(id),
   raw        TEXT NOT NULL,
+  source_type TEXT NOT NULL DEFAULT 'file' CHECK (source_type IN ('file', 'url')),
   node_count INTEGER NOT NULL,
   at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -58,6 +64,17 @@ CREATE TABLE IF NOT EXISTS node_tags (
 """
 
 _UNSET = object()  # set_node_tag 的「未提供」哨兵，支持部分更新
+_SOURCE_TYPES = {"file", "url"}
+
+
+def _source_type_for_url(url: str | None) -> str:
+    return "url" if url else "file"
+
+
+def _check_source_type(source_type: str) -> str:
+    if source_type not in _SOURCE_TYPES:
+        raise ValueError(f"unknown source_type: {source_type}")
+    return source_type
 
 
 class Store:
@@ -77,6 +94,17 @@ class Store:
         if "name" not in cols:
             self._conn.execute("ALTER TABLE subscriptions ADD COLUMN name TEXT NOT NULL DEFAULT ''")
             self._conn.execute("UPDATE subscriptions SET name = id WHERE name = ''")  # 旧行回填 name=id
+        if "source_type" not in cols:
+            self._conn.execute("ALTER TABLE subscriptions ADD COLUMN source_type TEXT NOT NULL DEFAULT 'file'")
+        self._conn.execute(
+            "UPDATE subscriptions SET source_type = "
+            "CASE WHEN url IS NOT NULL AND url != '' THEN 'url' ELSE 'file' END "
+            "WHERE source_type NOT IN ('file', 'url') "
+            "OR source_type != CASE WHEN url IS NOT NULL AND url != '' THEN 'url' ELSE 'file' END"
+        )
+        import_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(imports)").fetchall()}
+        if "source_type" not in import_cols:
+            self._conn.execute("ALTER TABLE imports ADD COLUMN source_type TEXT NOT NULL DEFAULT 'file'")
         self._conn.commit()
 
     # ---- subscriptions ----
@@ -84,10 +112,12 @@ class Store:
     def add_subscription(self, name: str, type: str = "auto", note: str = "", url: str | None = None) -> str:
         """新建订阅，返回自动生成的内部 id。"""
         sub_id = secrets.token_hex(8)
+        clean_url = (url or "").strip() or None
+        source_type = _source_type_for_url(clean_url)
         with self._lock:
             self._conn.execute(
-                "INSERT INTO subscriptions(id, name, type, note, url) VALUES (?, ?, ?, ?, ?)",
-                (sub_id, name, type, note, url),
+                "INSERT INTO subscriptions(id, name, type, note, source_type, url) VALUES (?, ?, ?, ?, ?, ?)",
+                (sub_id, name, type, note, source_type, clean_url),
             )
             self._conn.commit()
         return sub_id
@@ -102,6 +132,7 @@ class Store:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT s.id, s.name, s.type, s.created_at, "
+                "s.source_type, "
                 "(s.url IS NOT NULL AND s.url != '') AS has_url, "
                 "(SELECT COUNT(*) FROM nodes n WHERE n.sub_id = s.id) AS node_count "
                 "FROM subscriptions s ORDER BY s.created_at"
@@ -109,12 +140,19 @@ class Store:
         return [dict(r) for r in rows]
 
     def update_subscription(self, sub_id: str, name=_UNSET, url=_UNSET) -> None:
-        """改名 / 改 URL（只更新提供的字段；URL 可清空为 NULL；改名不动节点）。"""
+        """改名 / 改 URL（只更新提供的字段；URL 可清空为 NULL；改名不动节点）。
+
+        URL 存在即链接来源，URL 清空即文件来源；同一订阅当前只允许一种来源。
+        """
         with self._lock:
             if name is not _UNSET:
                 self._conn.execute("UPDATE subscriptions SET name = ? WHERE id = ?", (name, sub_id))
             if url is not _UNSET:
-                self._conn.execute("UPDATE subscriptions SET url = ? WHERE id = ?", (url, sub_id))
+                clean_url = (url or "").strip() or None
+                self._conn.execute(
+                    "UPDATE subscriptions SET source_type = ?, url = ? WHERE id = ?",
+                    (_source_type_for_url(clean_url), clean_url, sub_id),
+                )
             self._conn.commit()
 
     def delete_subscription(self, sub_id: str) -> None:
@@ -126,16 +164,18 @@ class Store:
 
     # ---- nodes ----
 
-    def import_nodes(self, sub_id: str, raw: str, nodes: list[Node]) -> int:
+    def import_nodes(self, sub_id: str, raw: str, nodes: list[Node], source_type: str = "file") -> int:
         """记录一次导入，并按 access_id upsert 节点。返回本次节点数。
 
         节点是**全局池**（access_id 唯一）；同一 access_id 跨订阅出现时，`sub_id` 归**最后导入的那条**
         （「全局池，后导入者赢」）。真·多订阅归属 = later（需要成员表）。
         """
+        source_type = _check_source_type(source_type)
         with self._lock:
             try:
                 self._conn.execute(
-                    "INSERT INTO imports(sub_id, raw, node_count) VALUES (?, ?, ?)", (sub_id, raw, len(nodes))
+                    "INSERT INTO imports(sub_id, raw, source_type, node_count) VALUES (?, ?, ?, ?)",
+                    (sub_id, raw, source_type, len(nodes)),
                 )
                 for n in nodes:
                     ep = n.access_id.endpoint

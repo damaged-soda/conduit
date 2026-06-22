@@ -48,6 +48,7 @@ def test_create_returns_opaque_id_and_lists_name():
     sid = _mksub(c, "My VPN")
     sub = c.get("/api/subscriptions").json()[0]
     assert sub["id"] == sid and sub["name"] == "My VPN"
+    assert sub["source_type"] == "file"
     assert sid != "My VPN" and "url" not in sub  # id 不透明、url 不泄露
 
 
@@ -56,6 +57,7 @@ def test_subscription_detail_returns_url_for_editor_only():
     sid = _mksub(c, "My VPN", "https://example/sub")
     detail = c.get(f"/api/subscriptions/{sid}").json()
     assert detail["url"] == "https://example/sub" and detail["has_url"] is True
+    assert detail["source_type"] == "url"
     listed = c.get("/api/subscriptions").json()[0]
     assert "url" not in listed  # 列表仍不回显 secret URL
 
@@ -83,7 +85,7 @@ def test_refresh_fetches_url_and_imports():
     sid = _mksub(c, "v", "https://example/sub")
     assert c.post(f"/api/subscriptions/{sid}/refresh").json()["imported"] == 2
     sub = c.get("/api/subscriptions").json()[0]
-    assert sub["has_url"] == 1 and "url" not in sub
+    assert sub["source_type"] == "url" and sub["has_url"] == 1 and "url" not in sub
 
 
 def test_patch_rename():
@@ -97,6 +99,7 @@ def test_patch_url_then_refresh():
     c = TestClient(create_app(":memory:", fetcher=lambda url: FIXTURE))
     sid = _mksub(c, "v")  # 先没 url
     c.patch(f"/api/subscriptions/{sid}", json={"url": "https://e/sub"})
+    assert c.get(f"/api/subscriptions/{sid}").json()["source_type"] == "url"
     assert c.post(f"/api/subscriptions/{sid}/refresh").json()["imported"] == 2
 
 
@@ -106,6 +109,38 @@ def test_patch_can_clear_url():
     assert c.patch(f"/api/subscriptions/{sid}", json={"url": None}).status_code == 200
     detail = c.get(f"/api/subscriptions/{sid}").json()
     assert detail["url"] is None and detail["has_url"] is False
+    assert detail["source_type"] == "file"
+
+
+def test_url_source_rejects_file_import():
+    c = _client()
+    sid = _mksub(c, "v", "https://e/sub")
+    r = c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    assert r.status_code == 400
+    assert "链接来源" in r.json()["detail"]
+
+
+def test_clearing_url_switches_back_to_file_import():
+    c = _client()
+    sid = _mksub(c, "v", "https://e/sub")
+    c.patch(f"/api/subscriptions/{sid}", json={"url": ""})
+    assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE}).json()["imported"] == 2
+
+
+def test_import_history_records_source_type(tmp_path):
+    import sqlite3
+
+    p = tmp_path / "service.db"
+    c = TestClient(create_app(str(p), fetcher=lambda url: FIXTURE))
+    file_sid = _mksub(c, "file")
+    url_sid = _mksub(c, "url", "https://e/sub")
+    c.post(f"/api/subscriptions/{file_sid}/import", json={"raw": FIXTURE})
+    c.post(f"/api/subscriptions/{url_sid}/refresh")
+
+    conn = sqlite3.connect(p)
+    rows = conn.execute("SELECT source_type FROM imports ORDER BY id").fetchall()
+    conn.close()
+    assert [r[0] for r in rows] == ["file", "url"]
 
 
 def test_delete_subscription_removes_nodes():
@@ -155,7 +190,7 @@ def test_bad_proxy_import_sanitized_400():
     assert r.status_code == 400 and "NOTAPORT" not in r.json()["detail"]
 
 
-def test_migration_adds_name_and_url_to_old_db(tmp_path):
+def test_migration_adds_name_url_and_source_type_to_old_db(tmp_path):
     import sqlite3
 
     from service.db import Store
@@ -166,8 +201,31 @@ def test_migration_adds_name_and_url_to_old_db(tmp_path):
     conn.execute("INSERT INTO subscriptions(id, type) VALUES ('westdata', 'clash')")
     conn.commit()
     conn.close()
-    sub = Store(str(p)).get_subscription("westdata")  # 迁移补 name(=id) + url
+    sub = Store(str(p)).get_subscription("westdata")  # 迁移补 name(=id) + url + source_type
     assert sub["name"] == "westdata" and "url" in sub
+    assert sub["source_type"] == "file"
+
+
+def test_migration_marks_old_url_subscriptions_as_url_source(tmp_path):
+    import sqlite3
+
+    from service.db import Store
+
+    p = tmp_path / "old-url.db"
+    conn = sqlite3.connect(p)  # 中间版本：已有 url，但无 source_type
+    conn.execute(
+        "CREATE TABLE subscriptions "
+        "(id TEXT PRIMARY KEY, name TEXT, type TEXT, note TEXT, url TEXT, created_at TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO subscriptions(id, name, type, note, url) VALUES "
+        "('westdata', 'westdata', 'auto', '', 'https://example/sub')"
+    )
+    conn.commit()
+    conn.close()
+
+    sub = Store(str(p)).get_subscription("westdata")
+    assert sub["source_type"] == "url"
 
 
 def test_sub_clash_requires_token():
