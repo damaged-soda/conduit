@@ -13,7 +13,7 @@
 
 ## 身份
 - commit 用个人号 `leavan <damaged.soda@gmail.com>`。
-- `gh` 操作用个人号 `damaged-soda`，用完切回工作号 `liyifan-128`，别扰乱日常默认。
+- `gh` 操作用个人号 `damaged-soda`。
 
 ## 配置是编译产物
 - 生成出来的 mihomo 配置**不手改**；要改就改源（规则 / 标签 / 模板 / 订阅）再重新生成。
