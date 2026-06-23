@@ -7,7 +7,7 @@
 - nodes：节点池，按 access_id 去重，sub_id 指向 subscriptions.id（稳定，改名不影响）。
 
 ⚠️ nodes/imports/subscriptions.url 含明文凭据 → 这个 DB 是 secret 载体：访问控制、别对公网暴露、别进 git。
-TODO：tags / health / traffic；连接并发；凭据加密；定时刷新。
+TODO：health / traffic；连接并发；凭据加密；定时刷新。
 """
 
 from __future__ import annotations

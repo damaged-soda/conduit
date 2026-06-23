@@ -27,7 +27,7 @@ class AccessId:
     是下一轮身份模型设计的核心；这里先放占位。
     """
 
-    value: str  # HMAC(规范化连接参数)
+    value: str  # sha256(规范化连接参数去掉显示名)
     endpoint: EndpointId
 
 

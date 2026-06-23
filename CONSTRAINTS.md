@@ -16,7 +16,7 @@
 
 ## 标签隔离
 - **proxy-group = 一个标签表达式**（可跨维度组合，如 `trusted ∩ hk ∩ streaming`）；**规则只引用 group 名**，永不引用订阅名或具体节点。render 时把表达式展开成显式成员。
-- 节点身份**分两层**：`endpoint_id = (type, 规范化 server, port)` 做粗物理聚合；`access_id = HMAC(规范化连接参数)`（sni / network / ws-path / grpc-service / cipher / uuid|password 哈希等）做稳定身份，**人工标签挂在 `access_id` 上**，订阅改名 / 换订阅后仍跟随。边界（同机多协议、CDN 落地变化等）用人工 alias / merge / split 表处理。（精确参数集与表格式见后续身份模型设计轮。）
+- 节点身份**分两层**：`endpoint_id = (type, 规范化 server, port)` 做粗物理聚合；`access_id = sha256(规范化连接参数去掉显示名)` 做稳定身份，**人工标签挂在 `access_id` 上**，订阅改名 / 换订阅后仍跟随。连接参数包括 sni / network / ws-path / grpc-service / cipher / uuid|password 等；若后续要改 HMAC，必须先有稳定 key 管理，避免打断既有标签。边界（同机多协议、CDN 落地变化等）用人工 alias / merge / split 表处理。（精确参数集与表格式见后续身份模型设计轮。）
 - 标签维度正交：`region` / `rate` 自动（正则），`trust` / `purpose` 等人工。
 - 没见过指纹的新节点先进**隔离区**（低信任 group），人工打标后转正；不阻塞自动化。
 

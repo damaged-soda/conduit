@@ -5,10 +5,10 @@
 ## 边界：conduit 的输入
 conduit 通过**读外部文件**接收调用方的现状（不硬编码、不反向依赖来源）。约定输入：
 
-- **subscriptions**：结构化来源清单，每条 `id / source_type(file|url) / url|path / type(parser hint) / headers_ref / fetch_interval / source_trust(可选)`；`url` 与 `path` 是互斥来源，敏感值用 `*_ref` 指外部 secret，放 `secrets/`；schema 见 `examples/subscriptions.example.yaml`。
+- **subscriptions**：结构化来源清单，每条 `id / source_type(file|url) / url|path / type(parser hint)`；`url` 与 `path` 是互斥来源，敏感值用 `*_ref` 指外部 secret，放 `secrets/`；schema 见 `examples/subscriptions.example.yaml`。`headers_ref / fetch_interval / source_trust` 是调用方 schema 预留字段，当前 `conduit-service` 只消费 URL 刷新或手动导入。
 - **targets 文件**：目标主机清单 + 每台的渲染相关 overlay（TUN + `route_exclude` / 监听 / DNS+fake-ip / controller bind + `controller_secret_ref`…）。用占位名，conduit 不认识具体主机；schema 见 `examples/targets.example.yaml`。送达 / 谁推谁拉不写这里，那不是 conduit 的事。
 - **direct-list 文件**：结构化的必须直连目的地（`domain_exact/suffix/wildcard` + `ip_cidr`）；schema 见 `examples/direct-list.example.yaml`。
-- **rules / tags / policies**：自维护的规则、标签映射、策略绑定（版本控制，放 conduit `config/`）。
+- **rules / tags / policies**：默认策略版本控制在 `conduit/policy.py`；服务内的人工标签和自定义 policy 存 DB。`config/` 目前只保留为后续外置规则源的占位。
 
 真值由调用方（如 fleet）按 schema 填，住在调用方那边或某个约定路径；conduit 只认 schema，不认来源。
 
@@ -64,9 +64,9 @@ mihomo health-check → 指标存储 → 生成器读「过去 N 时长不健康
 
 ## 目录
 ```text
-conduit/      生成器（Python 包，先放接口骨架）
-config/       规则源、标签映射、策略绑定（版本控制）
-templates/    mihomo 配置模板 + per-target overlay 钩子
+conduit/      生成器核心（订阅解析、身份、策略、分组、渲染）
+config/       预留：外置规则源 / 标签映射（当前默认策略在 conduit/policy.py）
+templates/    预留：模板化渲染（当前渲染逻辑在 conduit/render.py）
 examples/     输入文件的 schema 示例（targets / direct-list，占位值）
 secrets/      订阅 URL 等（gitignored）
 tests/        测试：golden 配置不变量 + Docker 集成台（见 TESTING.md）

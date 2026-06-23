@@ -9,7 +9,8 @@
 
 注意：v1 里 server 的规范化也会进入渲染输出（render 从 endpoint 取 server）；只动大小写/空白、
 DNS 不敏感、安全。做更激进归一（CNAME/IP）前需把「渲染用原始 server」与「身份用归一 server」解耦（TODO）。
-TODO：access_id 改 HMAC（CONSTRAINTS 要求）；身份字段 include/exclude 策略（udp/tfo 等本地偏好）等有标签了再调。
+TODO：身份字段 include/exclude 策略（udp/tfo 等本地偏好）等有标签了再调；若要从 sha256 改 HMAC，
+必须先设计稳定 key 管理和旧标签迁移。
 """
 
 from __future__ import annotations
