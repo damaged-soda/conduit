@@ -2,7 +2,7 @@
 
 订阅 = 命名的节点桶（id 内部不透明、name 可随意改）；来源二选一：① 基于链接（存 URL，按 URL 拉取）
 ② 手动导入（文件/文本内容）。网络抓取在服务侧（impure，见 service/fetch.py）；解析/身份是 core 纯函数。
-TODO：tag、render+pull、定时刷新、认证、secret 加密。
+TODO：health/prune、定时刷新、认证、secret 加密。
 
 跑：`uvicorn --factory service.app:make_app`（DB 路径用 CONDUIT_DB，默认 conduit.db）。
 """
