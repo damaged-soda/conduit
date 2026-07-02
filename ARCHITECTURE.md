@@ -28,7 +28,7 @@ fetch → normalize → tag → prune → render → validate
 ```
 
 1. **fetch**：抓订阅原始内容（多格式：clash yaml / URI 行 / base64 等）。
-2. **normalize**：解析为统一 `Node`，算指纹；只跳过残缺 / 非法端口等不可用记录，不按 UDP 资格过滤。**丢弃订阅自带的规则系统**。
+2. **normalize**：解析为统一 `Node`，算指纹；跳过残缺记录、拒绝非法端口等无法解析输入，不按 UDP 资格过滤。**丢弃订阅自带的规则系统**。
 3. **tag**：auto（正则）+ manual（映射）；未见过的指纹进隔离区。
 4. **prune**：按健康历史剔除长期不健康节点（阈值/时间窗待定）。
 5. **render**：按模板渲染**某个 target** 的 mihomo 配置（inline proxies + 标签 group + 规则 + 注入 direct-list + per-target overlay）；输出前过滤不支持 UDP 的节点。
