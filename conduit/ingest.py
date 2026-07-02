@@ -17,11 +17,11 @@ import yaml
 
 from .identity import access_id
 from .models import Node
+from .udp import proxy_supports_udp, truthy
 
 _CORE = {"name", "type", "server", "port"}
 _URI_SCHEMES = {"ss", "vmess", "trojan", "vless", "hysteria", "hysteria2", "hy2"}
 _URI_START = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/")
-_UDP_DEFAULT_TRUE_TYPES = {"hysteria", "hysteria2", "hy2", "tuic", "wireguard"}
 
 
 def _text(raw: str | bytes) -> str:
@@ -41,13 +41,6 @@ def _usable(p: object) -> bool:
 
 def _validate_core(proxy: dict) -> None:
     int(proxy["port"])
-
-
-def _supports_udp(proxy: dict) -> bool:
-    """保守判定：显式声明或 UDP-based 协议才视为支持 UDP。"""
-    if "udp" in proxy:
-        return _flag(proxy["udp"])
-    return str(proxy.get("type", "")).strip().lower() in _UDP_DEFAULT_TRUE_TYPES
 
 
 def _to_node(proxy: dict, source_id: str) -> Node:
@@ -85,7 +78,7 @@ def _q(q: dict[str, list[str]], *names: str) -> str:
 
 
 def _flag(v: object) -> bool:
-    return str(v).strip().lower() in {"1", "true", "yes", "on"}
+    return truthy(v)
 
 
 def _int(v: object, default: int | None = None) -> int | None:
@@ -497,7 +490,7 @@ def normalize_with_stats(
             continue
         usable += 1
         _validate_core(p)
-        if not _supports_udp(p):
+        if not proxy_supports_udp(p):
             filtered_no_udp += 1
             continue
         nodes.append(_to_node(p, source_id))

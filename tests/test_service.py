@@ -272,6 +272,34 @@ def test_sub_clash_pure_has_proxies_groups_and_creds():
     assert "pass1" in r.text  # 订阅含明文节点凭据（ss password）→ token 保护是对的
 
 
+def test_sub_clash_filters_legacy_nodes_without_udp(tmp_path):
+    import json
+    import sqlite3
+
+    p = tmp_path / "service.db"
+    c = TestClient(create_app(str(p)))
+    sid = _mksub(c)
+    conn = sqlite3.connect(p)
+    conn.execute(
+        "INSERT INTO nodes(access_id, sub_id, type, server, port, raw_name, params) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("legacy-keep", sid, "ss", "keep.example.com", 8388, "🇭🇰 HK 01", json.dumps({"password": "p", "udp": True})),
+    )
+    conn.execute(
+        "INSERT INTO nodes(access_id, sub_id, type, server, port, raw_name, params) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("legacy-drop", sid, "ss", "drop.example.com", 8388, "🇯🇵 JP 01", json.dumps({"password": "p"})),
+    )
+    conn.commit()
+    conn.close()
+
+    token = c.get("/api/sub-token").json()["token"]
+    cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
+    assert [p["name"] for p in cfg["proxies"]] == ["🇭🇰 HK 01"]
+    assert "HK" in c.get("/api/groups").json()["targets"]
+    assert "JP" not in c.get("/api/groups").json()["targets"]
+
+
 def test_sub_clash_has_clash_scaffolding():
     """clash-verge 导入校验需要标准顶层骨架；只给 proxies/groups/rules 会被静默拒绝。"""
     c = _client()

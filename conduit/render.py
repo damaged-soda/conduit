@@ -25,6 +25,7 @@ import yaml
 from .models import Node
 from .policy import DEFAULT_POLICY, policy_rules, rule_providers_block
 from .tags import region_of
+from .udp import node_supports_udp
 
 _HEALTH_URL = "http://www.gstatic.com/generate_204"
 
@@ -126,6 +127,7 @@ def _fake_ip_filter(direct: dict) -> list[str]:
 
 def build_config(nodes: list[Node], direct: dict, overlay: dict) -> dict:
     """渲染成 mihomo 配置 dict（rules 顺序关键：direct-list 必须在最前）。"""
+    nodes = [n for n in nodes if node_supports_udp(n)]
     if not nodes:
         raise ValueError("render: 无 active 节点，fail-closed 拒绝生成空配置")
 
@@ -271,9 +273,11 @@ def build_subscription(
             "route-exclude-address": _BASELINE_DIRECT + list(direct.get("ip_cidr", [])) + d_ips,
         }
 
-    # 剔除隔离节点 + 算每个节点的 region（override 优先）
+    # 剔除隔离 / 不支持 UDP 的节点 + 算每个节点的 region（override 优先）
     active: list[tuple[Node, str]] = []
     for n in nodes:
+        if not node_supports_udp(n):
+            continue
         t = tags.get(n.access_id.value, {})
         if t.get("quarantined"):
             continue

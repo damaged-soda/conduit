@@ -28,6 +28,7 @@ from conduit.ingest import normalize_with_stats
 from conduit.policy import DEFAULT_POLICY, GEOIP_CATALOG, GEOSITE_CATALOG
 from conduit.render import render_subscription, subscription_rules
 from conduit.tags import normalize_region, region_of
+from conduit.udp import node_supports_udp
 
 from .db import Store
 from .fetch import fetch_url
@@ -322,6 +323,8 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
         tags = store.get_node_tags()
         regions: list[str] = []
         for n in store.nodes_for_render():
+            if not node_supports_udp(n):
+                continue
             t = tags.get(n.access_id.value, {})
             if t.get("quarantined"):
                 continue

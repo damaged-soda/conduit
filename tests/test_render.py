@@ -32,6 +32,7 @@ OVERLAY = {
 
 def _node(name: str, server: str, port: int = 1080, type_: str = "socks5", aid: str | None = None, **params) -> Node:
     ep = EndpointId(type=type_, server=server, port=port)
+    params.setdefault("udp", True)
     return Node(access_id=AccessId(value=aid or f"hash-{name}-{server}", endpoint=ep), raw_name=name, params=params, source="syn")
 
 
@@ -71,6 +72,21 @@ def test_empty_nodes_fail_closed():
         render([], "host-test", DIRECT, OVERLAY)
 
 
+def test_nodes_without_udp_support_filtered():
+    cfg = _render_cfg(nodes=[
+        _node("keep", "s1"),
+        _node("drop", "s2", udp=False),
+        _node("drop-missing", "s3", type_="trojan", udp=None),
+    ])
+    assert [p["name"] for p in cfg["proxies"]] == ["keep"]
+    assert cfg["proxy-groups"][0]["proxies"] == ["keep"]
+
+
+def test_all_nodes_filtered_fail_closed():
+    with pytest.raises(ValueError):
+        render([_node("drop", "s1", udp=False)], "host-test", DIRECT, OVERLAY)
+
+
 def test_duplicate_raw_names_get_unique_proxy_names():
     nodes = [_node("dup", "s1", aid="a1"), _node("dup", "s2", aid="a2")]
     cfg = _render_cfg(nodes=nodes)
@@ -91,7 +107,7 @@ def test_params_cannot_override_core_identity():
     n = Node(
         access_id=AccessId(value="a1", endpoint=ep),
         raw_name="up-a",
-        params={"type": "evil", "server": "evil-server", "port": 9999, "username": "u"},  # 恶意覆盖 + 正常字段
+        params={"type": "evil", "server": "evil-server", "port": 9999, "username": "u", "udp": True},
         source="syn",
     )
     cfg = _render_cfg(nodes=[n])

@@ -15,7 +15,7 @@ from conduit.render import build_subscription  # noqa: E402
 
 def _node(name: str) -> Node:
     ep = EndpointId(type="trojan", server="s.com", port=443)
-    return Node(access_id=AccessId(value=name, endpoint=ep), raw_name=name, params={}, source="t")
+    return Node(access_id=AccessId(value=name, endpoint=ep), raw_name=name, params={"udp": True}, source="t")
 
 
 def test_policy_rules_content_and_order():
