@@ -76,7 +76,7 @@ def test_nodes_without_udp_support_filtered():
     cfg = _render_cfg(nodes=[
         _node("keep", "s1"),
         _node("drop", "s2", udp=False),
-        _node("drop-missing", "s3", type_="trojan", udp=None),
+        _node("drop-null", "s3", type_="trojan", udp=None),
     ])
     assert [p["name"] for p in cfg["proxies"]] == ["keep"]
     assert cfg["proxy-groups"][0]["proxies"] == ["keep"]

@@ -296,7 +296,9 @@ def test_sub_clash_filters_legacy_nodes_without_udp(tmp_path):
 
     token = c.get("/api/sub-token").json()["token"]
     cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
+    full_cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token, "full": 1}).text)
     assert [p["name"] for p in cfg["proxies"]] == ["🇭🇰 HK 01"]
+    assert [p["name"] for p in full_cfg["proxies"]] == ["🇭🇰 HK 01"]
     assert "HK" in c.get("/api/groups").json()["targets"]
     assert "JP" not in c.get("/api/groups").json()["targets"]
 
