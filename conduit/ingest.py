@@ -2,7 +2,7 @@
 
 支持 Clash/Mihomo YAML（只取 `proxies:`，丢弃订阅自带规则）、URI 行订阅，以及整份
 base64 包裹的 URI/YAML 订阅。节点「连不上」那种脏 = 后续 health-check + prune 的事，
-不在 ingest 管；这里只过滤明显残缺（缺 type/server/port）和不支持 UDP 的条目。
+不在 ingest 管；这里只过滤明显残缺（缺 type/server/port）的条目。
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import yaml
 
 from .identity import access_id
 from .models import Node
-from .udp import proxy_supports_udp, truthy
+from .udp import truthy
 
 _CORE = {"name", "type", "server", "port"}
 _URI_SCHEMES = {"ss", "vmess", "trojan", "vless", "hysteria", "hysteria2", "hy2"}
@@ -480,21 +480,17 @@ def _parse_source(raw: str | bytes, source_type: str) -> list:
 def normalize_with_stats(
     raw: str | bytes, source_type: str = "clash", source_id: str = ""
 ) -> tuple[list[Node], dict[str, int]]:
-    """把一份导入内容解析为 Node 列表，并返回导入过滤统计。"""
+    """把一份导入内容解析为 Node 列表，并返回导入统计。"""
     proxies = _parse_source(raw, source_type)
     nodes: list[Node] = []
     usable = 0
-    filtered_no_udp = 0
     for p in proxies:
         if not _usable(p):
             continue
         usable += 1
         _validate_core(p)
-        if not proxy_supports_udp(p):
-            filtered_no_udp += 1
-            continue
         nodes.append(_to_node(p, source_id))
-    return nodes, {"parsed": len(proxies), "usable": usable, "filtered_no_udp": filtered_no_udp}
+    return nodes, {"parsed": len(proxies), "usable": usable}
 
 
 def normalize(raw: str | bytes, source_type: str = "clash", source_id: str = "") -> list[Node]:

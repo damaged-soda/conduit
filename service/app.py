@@ -24,7 +24,7 @@ from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from conduit.ingest import normalize_with_stats
+from conduit.ingest import normalize
 from conduit.policy import DEFAULT_POLICY, GEOIP_CATALOG, GEOSITE_CATALOG
 from conduit.render import render_subscription, subscription_rules
 from conduit.tags import normalize_region, region_of
@@ -187,13 +187,10 @@ def _with_mesh_bypass(policy: dict) -> dict:
 
 def _normalize_and_store(store: Store, sub: dict, raw: str, source_type: str) -> dict:
     try:
-        nodes, stats = normalize_with_stats(raw, sub["type"], sub["id"])
+        nodes = normalize(raw, sub["type"], sub["id"])
     except (ValueError, TypeError, yaml.YAMLError):  # sanitized 400：不回显订阅内容 / parser 细节
         raise HTTPException(400, "导入内容解析失败（请确认是合法的 clash/URI/base64 订阅）")
-    return {
-        "imported": store.import_nodes(sub["id"], raw, nodes, source_type),
-        "filtered_no_udp": stats["filtered_no_udp"],
-    }
+    return {"imported": store.import_nodes(sub["id"], raw, nodes, source_type)}
 
 
 def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_url) -> FastAPI:
@@ -470,10 +467,6 @@ summary{cursor:pointer;font-weight:600;font-size:13px;padding:5px 8px;user-selec
 <script>
 // 全部数据走 textContent / DOM，避免订阅来的 raw_name 等造成 XSS
 let SUBS=[], SEL=null, NOPEN=new Set(), MANUAL_MODE={};  // 记住展开地区 + 手动导入子模式
-function importSummary(prefix,r){
-  const filtered=r.filtered_no_udp||0;
-  return prefix+r.imported+' 节点'+(filtered?'，过滤 '+filtered+' 个不支持 UDP':'');
-}
 function el(t,x){const e=document.createElement(t);if(x!=null)e.textContent=x;return e}
 function input(ph,val){const e=document.createElement('input');e.type='text';e.placeholder=ph||'';if(val!=null)e.value=val;return e}
 function btn(label,fn){const b=el('button',label);b.onclick=fn;return b}
@@ -552,7 +545,7 @@ function renderNew(){
         MANUAL_MODE[r.id]=mode;
         try{
           const im=await jpost(`/api/subscriptions/${r.id}/import`,{raw:importRaw});
-          await select(r.id);setMsg(importSummary('已创建并导入 ',im));
+          await select(r.id);setMsg('已创建并导入 '+im.imported+' 节点');
         }catch(e){
           await select(r.id);setMsg('导入失败: '+e.message);
         }
@@ -601,9 +594,9 @@ async function renderDetail(){
   async function importManual(rawText){
     await saveSource();
     const r=await jpost(`/api/subscriptions/${SEL}/import`,{raw:rawText});
-    await select(SEL);setMsg(importSummary('导入 ',r));
+    await select(SEL);setMsg('导入 '+r.imported+' 节点');
   }
-  const refreshBtn=btn('🔄 保存并按 URL 刷新',async()=>{try{await saveSource();const r=await jpost(`/api/subscriptions/${SEL}/refresh`);await select(SEL);setMsg(importSummary('刷新：导入 ',r))}catch(e){setMsg('刷新失败: '+e.message)}});
+  const refreshBtn=btn('🔄 保存并按 URL 刷新',async()=>{try{await saveSource();const r=await jpost(`/api/subscriptions/${SEL}/refresh`);await select(SEL);setMsg('刷新：导入 '+r.imported+' 节点')}catch(e){setMsg('刷新失败: '+e.message)}});
   const deleteBtn=btn('🗑 删除订阅',async()=>{if(confirm('删除该订阅及其节点？')){await j(`/api/subscriptions/${SEL}`,{method:'DELETE'});delete MANUAL_MODE[SEL];SEL=null;await loadSubs();document.getElementById('detail').replaceChildren(el('p','已删除。'))}});
   const importFileBtn=btn('导入文件',async()=>{try{await importManual(await selectedFileText(file))}catch(e){setMsg('导入失败: '+e.message)}});
   const importTextBtn=btn('导入文本',async()=>{try{if(!raw.value.trim())throw new Error('请输入订阅内容');await importManual(raw.value)}catch(e){setMsg('导入失败: '+e.message)}});

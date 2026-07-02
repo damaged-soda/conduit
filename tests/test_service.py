@@ -80,16 +80,17 @@ def test_import_uri_base64_subscription_with_default_type():
     assert node["raw_name"] == "S" and node["type"] == "ss"
 
 
-def test_import_reports_udp_filtered_nodes():
+def test_import_preserves_nodes_without_udp_support():
     c = _client()
     sid = _mksub(c)
     raw = (
         "proxies:\n"
         "  - {name: keep, type: ss, server: a.example.com, port: 8388, password: p, udp: true}\n"
-        "  - {name: drop, type: trojan, server: b.example.com, port: 443, password: p}\n"
+        "  - {name: no-udp-flag, type: trojan, server: b.example.com, port: 443, password: p}\n"
     )
     body = c.post(f"/api/subscriptions/{sid}/import", json={"raw": raw}).json()
-    assert body == {"imported": 1, "filtered_no_udp": 1}
+    assert body == {"imported": 2}
+    assert {n["raw_name"] for n in c.get(f"/api/subscriptions/{sid}/nodes").json()} == {"keep", "no-udp-flag"}
 
 
 def test_refresh_fetches_url_and_imports():
@@ -100,15 +101,15 @@ def test_refresh_fetches_url_and_imports():
     assert sub["source_type"] == "url" and sub["has_url"] == 1 and "url" not in sub
 
 
-def test_refresh_reports_udp_filtered_nodes():
+def test_refresh_preserves_nodes_without_udp_support():
     raw = (
         "proxies:\n"
         "  - {name: keep, type: ss, server: a.example.com, port: 8388, password: p, udp: true}\n"
-        "  - {name: drop, type: trojan, server: b.example.com, port: 443, password: p}\n"
+        "  - {name: no-udp-flag, type: trojan, server: b.example.com, port: 443, password: p}\n"
     )
     c = TestClient(create_app(":memory:", fetcher=lambda url: raw))
     sid = _mksub(c, "v", "https://example/sub")
-    assert c.post(f"/api/subscriptions/{sid}/refresh").json() == {"imported": 1, "filtered_no_udp": 1}
+    assert c.post(f"/api/subscriptions/{sid}/refresh").json() == {"imported": 2}
 
 
 def test_patch_rename():
