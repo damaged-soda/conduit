@@ -73,11 +73,23 @@ def test_import_into_subscription_and_detail_nodes():
 def test_import_uri_base64_subscription_with_default_type():
     c = _client()
     sid = _mksub(c)
-    uri = "ss://" + base64.urlsafe_b64encode(b"aes-256-gcm:p").decode().rstrip("=") + "@s.example.com:8388#S"
+    uri = "ss://" + base64.urlsafe_b64encode(b"aes-256-gcm:p").decode().rstrip("=") + "@s.example.com:8388?udp=1#S"
     raw = base64.b64encode(uri.encode()).decode()
     assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": raw}).json()["imported"] == 1
     node = c.get(f"/api/subscriptions/{sid}/nodes").json()[0]
     assert node["raw_name"] == "S" and node["type"] == "ss"
+
+
+def test_import_reports_udp_filtered_nodes():
+    c = _client()
+    sid = _mksub(c)
+    raw = (
+        "proxies:\n"
+        "  - {name: keep, type: ss, server: a.example.com, port: 8388, password: p, udp: true}\n"
+        "  - {name: drop, type: trojan, server: b.example.com, port: 443, password: p}\n"
+    )
+    body = c.post(f"/api/subscriptions/{sid}/import", json={"raw": raw}).json()
+    assert body == {"imported": 1, "filtered_no_udp": 1}
 
 
 def test_refresh_fetches_url_and_imports():
@@ -86,6 +98,17 @@ def test_refresh_fetches_url_and_imports():
     assert c.post(f"/api/subscriptions/{sid}/refresh").json()["imported"] == 2
     sub = c.get("/api/subscriptions").json()[0]
     assert sub["source_type"] == "url" and sub["has_url"] == 1 and "url" not in sub
+
+
+def test_refresh_reports_udp_filtered_nodes():
+    raw = (
+        "proxies:\n"
+        "  - {name: keep, type: ss, server: a.example.com, port: 8388, password: p, udp: true}\n"
+        "  - {name: drop, type: trojan, server: b.example.com, port: 443, password: p}\n"
+    )
+    c = TestClient(create_app(":memory:", fetcher=lambda url: raw))
+    sid = _mksub(c, "v", "https://example/sub")
+    assert c.post(f"/api/subscriptions/{sid}/refresh").json() == {"imported": 1, "filtered_no_udp": 1}
 
 
 def test_patch_rename():
@@ -185,7 +208,7 @@ def test_malformed_yaml_import_returns_400():
 def test_bad_proxy_import_sanitized_400():
     c = _client()
     sid = _mksub(c)
-    bad = "proxies:\n  - {name: x, type: ss, server: s.com, port: NOTAPORT, password: p}\n"
+    bad = "proxies:\n  - {name: x, type: ss, server: s.com, port: NOTAPORT, password: p, udp: true}\n"
     r = c.post(f"/api/subscriptions/{sid}/import", json={"raw": bad})
     assert r.status_code == 400 and "NOTAPORT" not in r.json()["detail"]
 

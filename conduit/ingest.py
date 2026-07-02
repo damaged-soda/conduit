@@ -2,7 +2,7 @@
 
 支持 Clash/Mihomo YAML（只取 `proxies:`，丢弃订阅自带规则）、URI 行订阅，以及整份
 base64 包裹的 URI/YAML 订阅。节点「连不上」那种脏 = 后续 health-check + prune 的事，
-不在 ingest 管；这里只过滤明显残缺（缺 type/server/port）的条目。
+不在 ingest 管；这里只过滤明显残缺（缺 type/server/port）和不支持 UDP 的条目。
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from .models import Node
 _CORE = {"name", "type", "server", "port"}
 _URI_SCHEMES = {"ss", "vmess", "trojan", "vless", "hysteria", "hysteria2", "hy2"}
 _URI_START = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/")
+_UDP_DEFAULT_TRUE_TYPES = {"hysteria", "hysteria2", "hy2", "tuic", "wireguard"}
 
 
 def _text(raw: str | bytes) -> str:
@@ -36,6 +37,17 @@ def parse_clash(raw: str | bytes) -> list:
 
 def _usable(p: object) -> bool:
     return isinstance(p, dict) and bool(p.get("type")) and bool(p.get("server")) and p.get("port") is not None
+
+
+def _validate_core(proxy: dict) -> None:
+    int(proxy["port"])
+
+
+def _supports_udp(proxy: dict) -> bool:
+    """保守判定：显式声明或 UDP-based 协议才视为支持 UDP。"""
+    if "udp" in proxy:
+        return _flag(proxy["udp"])
+    return str(proxy.get("type", "")).strip().lower() in _UDP_DEFAULT_TRUE_TYPES
 
 
 def _to_node(proxy: dict, source_id: str) -> Node:
@@ -72,8 +84,8 @@ def _q(q: dict[str, list[str]], *names: str) -> str:
     return ""
 
 
-def _flag(v: str) -> bool:
-    return v.strip().lower() in {"1", "true", "yes", "on"}
+def _flag(v: object) -> bool:
+    return str(v).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _int(v: object, default: int | None = None) -> int | None:
@@ -229,6 +241,9 @@ def _parse_ss(uri: str) -> dict:
     plugin = _q(q, "plugin")
     if plugin:
         _parse_ss_plugin(proxy, plugin)
+    udp = _q(q, "udp")
+    if udp:
+        proxy["udp"] = _flag(udp)
     return proxy
 
 
@@ -262,6 +277,8 @@ def _parse_vmess(uri: str) -> dict:
         proxy["alpn"] = _split_alpn(str(data["alpn"]))
     if data.get("fp"):
         proxy["client-fingerprint"] = data["fp"]
+    if "udp" in data:
+        proxy["udp"] = _flag(data["udp"])
     if net == "ws":
         opts: dict = {}
         if data.get("path"):
@@ -355,6 +372,9 @@ def _parse_hysteria(uri: str) -> dict:
             proxy[dst] = f"{value} Mbps" if src.endswith("mbps") else value
     if _q(q, "obfs"):
         proxy["obfs"] = _q(q, "obfs")
+    udp = _q(q, "udp")
+    if udp:
+        proxy["udp"] = _flag(udp)
     return proxy
 
 
@@ -390,6 +410,9 @@ def _parse_hysteria2(uri: str) -> dict:
     alpn = _q(q, "alpn")
     if alpn:
         proxy["alpn"] = _split_alpn(alpn)
+    udp = _q(q, "udp")
+    if udp:
+        proxy["udp"] = _flag(udp)
     return proxy
 
 
@@ -446,18 +469,42 @@ def _parse_auto(raw: str | bytes) -> list:
     return []
 
 
-def normalize(raw: str | bytes, source_type: str = "clash", source_id: str = "") -> list[Node]:
-    """把一份导入内容解析为 Node 列表。"""
+def _parse_source(raw: str | bytes, source_type: str) -> list:
     kind = (source_type or "auto").strip().lower()
     if kind in {"auto", "clash"}:
-        proxies = _parse_auto(raw)
+        return _parse_auto(raw)
     elif kind == "uri":
-        proxies = parse_uri(raw)
+        return parse_uri(raw)
     elif kind == "base64":
         decoded = _b64decode(_text(raw))
         if decoded is None:
             raise ValueError("base64 订阅解码失败")
-        proxies = _parse_auto(decoded)
+        return _parse_auto(decoded)
     else:
         raise ValueError(f"暂不支持的订阅类型：{source_type}")
-    return [_to_node(p, source_id) for p in proxies if _usable(p)]
+
+
+def normalize_with_stats(
+    raw: str | bytes, source_type: str = "clash", source_id: str = ""
+) -> tuple[list[Node], dict[str, int]]:
+    """把一份导入内容解析为 Node 列表，并返回导入过滤统计。"""
+    proxies = _parse_source(raw, source_type)
+    nodes: list[Node] = []
+    usable = 0
+    filtered_no_udp = 0
+    for p in proxies:
+        if not _usable(p):
+            continue
+        usable += 1
+        _validate_core(p)
+        if not _supports_udp(p):
+            filtered_no_udp += 1
+            continue
+        nodes.append(_to_node(p, source_id))
+    return nodes, {"parsed": len(proxies), "usable": usable, "filtered_no_udp": filtered_no_udp}
+
+
+def normalize(raw: str | bytes, source_type: str = "clash", source_id: str = "") -> list[Node]:
+    """把一份导入内容解析为 Node 列表。"""
+    nodes, _ = normalize_with_stats(raw, source_type, source_id)
+    return nodes
