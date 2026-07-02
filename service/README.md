@@ -4,12 +4,12 @@
 
 ## 跑
 
-**Docker（rig 上的目标部署，拉公开镜像）**：rig 上只要一份 `deploy/compose.yaml`（不需源码）：
+**Docker（standalone / 手动 compose，拉公开镜像）**：只要一份 `deploy/compose.yaml`（不需源码）：
 ```
 CONDUIT_BIND=<rig 私有网 IP> docker compose -f deploy/compose.yaml pull
 CONDUIT_BIND=<rig 私有网 IP> docker compose -f deploy/compose.yaml up -d
 ```
-镜像由 GitHub Actions 在 push main / 打 `v*` tag 时自动 build 推到 `ghcr.io/damaged-soda/conduit`（公开包，零认证拉）。DB 落命名卷 `conduit-data`（含凭据，留 rig 磁盘）。默认只绑宿主 `127.0.0.1:8000`；上 tailnet 用 `CONDUIT_BIND` 绑私有网 IP（之后 `rig:8000` 可达）或 `tailscale serve`。**别绑 0.0.0.0**（暂无认证）。
+镜像由 GitHub Actions 在 push main / 打 `v*` tag 时自动 build 推到 `ghcr.io/damaged-soda/conduit`（公开包，零认证拉）。内置 compose 默认跟踪 `latest`，生产 rig 的目标态由 `fleet-deploy` 仓 pin 具体 `v*` tag。DB 落命名卷 `conduit-data`（含凭据，留 rig 磁盘）。默认只绑宿主 `127.0.0.1:8000`；上 tailnet 用 `CONDUIT_BIND` 绑私有网 IP（之后 `rig:8000` 可达）或 `tailscale serve`。**别绑 0.0.0.0**（暂无认证）。
 
 **本地开发（现构建）**：`docker compose -f deploy/compose.yaml up -d --build`。
 
@@ -25,7 +25,7 @@ uvicorn --factory service.app:make_app   # DB 路径用 CONDUIT_DB，默认 cond
 - `GET /api/meta`（版本 / 最近部署时间）
 - `POST /api/subscriptions`、`GET /api/subscriptions`（列表不回显 URL，只给 `source_type`/`has_url`）、`GET/PATCH /api/subscriptions/{id}`（管理页编辑用，回显 URL）、`POST /api/subscriptions/{id}/import`（手动来源导入）、`POST /api/subscriptions/{id}/refresh`（URL 来源拉取）
 - 来源模型：`subscriptions.source_type` 为 `file|url`，当前来源二选一；`url` 来源必须有 URL 且只能刷新，`file` 来源无 URL 且只能手动导入。页面里的文件 / 文本只是手动导入的两种输入方式。`imports` 只记录每次 raw 快照及其来源类型，不代表第二个活动来源。
-- 导入格式：Clash/Mihomo YAML、URI 行订阅（ss/vmess/trojan/vless/hysteria/hysteria2）、整份 base64 包裹的 URI/YAML；订阅渲染只输出支持 UDP 的代理节点。
+- 导入格式：Clash/Mihomo YAML、URI 行订阅（ss/vmess/trojan/vless/hysteria/hysteria2）、整份 base64 包裹的 URI/YAML；导入保留可解析节点，订阅渲染只输出支持 UDP 的代理节点。
 - `GET /api/nodes`（不含凭据）
 
 **标签 / 分组**（节点 → 地区组）

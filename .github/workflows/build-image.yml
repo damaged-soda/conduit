@@ -2,10 +2,10 @@
 # 公开仓 + 公开 package ⇒ rig 直接 `docker pull` 零认证。镜像不含 secrets（见 .dockerignore）。
 #
 # Tag 语义：
-#   latest  —— 每次合 main 都动（最新开发态）。
-#   release —— 只在打 v* tag 时移动（固定的「已发布」指针）。rig 的部署 reconciler
-#              只跟踪 :release，所以日常合 main 不会触发重部署，只有打版本 tag 才会。
-#   v*      —— 不可变的版本镜像；sha-xxxx —— 每个 commit 一个不可变镜像。
+#   latest  —— 每次合 main 都动（最新开发态，供 standalone/manual compose 使用）。
+#   release —— 只在打 v* tag 时移动（固定的「已发布」指针，供人工 / 兼容消费）。
+#   v*      —— 不可变的版本镜像；生产 rig 由 fleet-deploy 仓 pin 具体 v* tag。
+#   sha-xxxx —— 每个 commit 一个不可变镜像。
 name: build-image
 
 on:
@@ -43,7 +43,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
-          # 关掉 auto-latest：否则打 v* tag（甚至给旧 commit 打）也会移动 latest，导致 rig 回滚。
+          # 关掉 auto-latest：否则打 v* tag（甚至给旧 commit 打）也会移动 latest，影响仍跟踪 latest 的 standalone/manual compose。
           flavor: latest=false
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}

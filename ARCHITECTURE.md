@@ -28,10 +28,10 @@ fetch → normalize → tag → prune → render → validate
 ```
 
 1. **fetch**：抓订阅原始内容（多格式：clash yaml / URI 行 / base64 等）。
-2. **normalize**：解析为统一 `Node`，算指纹。**丢弃订阅自带的规则系统**。
+2. **normalize**：解析为统一 `Node`，算指纹；跳过残缺记录、拒绝非法端口等无法解析输入，不按 UDP 资格过滤。**丢弃订阅自带的规则系统**。
 3. **tag**：auto（正则）+ manual（映射）；未见过的指纹进隔离区。
 4. **prune**：按健康历史剔除长期不健康节点（阈值/时间窗待定）。
-5. **render**：按模板渲染**某个 target** 的 mihomo 配置（inline proxies + 标签 group + 规则 + 注入 direct-list + per-target overlay）。
+5. **render**：按模板渲染**某个 target** 的 mihomo 配置（inline proxies + 标签 group + 规则 + 注入 direct-list + per-target overlay）；输出前过滤不支持 UDP 的节点。
 6. **validate**：mihomo 配置自检 + schema 校验；失败即阻断。
 
 **送达不在核心流水线里**：conduit 产出 per-target 工件，怎么送到主机、怎么 reload，由调用方决定（conduit 至多提供通用 hook）。
@@ -61,6 +61,7 @@ mihomo health-check → 指标存储 → 生成器读「过去 N 时长不健康
 ## 分组 + 订阅输出（已落地）
 - **地区分组**(`conduit/tags.py`)：`region_of` **文本关键词优先、旗帜 emoji 兜底**(机场常把台湾标 🇨🇳)；render 按 region 分组 = `PROXY`(select:[AUTO,各地区]) + `AUTO`(fallback 外壳：优先隐藏 `AUTO-FAST` url-test, tolerance=200，再用原始节点兜底) + 每地区一个 fallback 组。标签按 access_id 存 DB、跟节点走。
 - **服务以订阅形态下发**：`conduit-service` 把节点池+分组+规则渲成 clash 订阅 `GET /sub/clash?token=&full=`；`pure` 纯净、`full` 加 fake-ip dns + tun（full 模式必须项见 [CONSTRAINTS.md](CONSTRAINTS.md)）。clash-verge/mihomo 直接订阅，等价 `fetch→tag→render` 流水线的产物。
+- **UDP 资格过滤在 render 期**：导入 / 刷新保留所有可解析节点，`render` 和 `/api/groups` 使用同一套 UDP 资格过滤，旧 DB 里的非 UDP 节点也不会进入订阅输出；`/sub/clash` 每次请求实时渲染，不依赖缓存刷新。
 
 ## 目录
 ```text
