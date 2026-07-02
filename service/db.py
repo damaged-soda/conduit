@@ -246,18 +246,26 @@ class Store:
             args = (sub_id,)
         with self._lock:
             rows = self._conn.execute(q, args).fetchall()
-        out: list[Node] = []
-        for r in rows:
-            ep = EndpointId(type=r["type"], server=r["server"], port=r["port"])
-            out.append(
-                Node(
-                    access_id=AccessId(value=r["access_id"], endpoint=ep),
-                    raw_name=r["raw_name"],
-                    params=json.loads(r["params"]),
-                    source=r["sub_id"] or "",
-                )
-            )
-        return out
+        return [self._node_from_row(r) for r in rows]
+
+    def node_for_render(self, access_id: str) -> Node | None:
+        """取单个节点并重建成 Node（含 params 凭据），仅服务内部渲染 / 探测用。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT access_id, sub_id, type, server, port, raw_name, params "
+                "FROM nodes WHERE access_id = ?",
+                (access_id,),
+            ).fetchone()
+        return self._node_from_row(row) if row else None
+
+    def _node_from_row(self, r) -> Node:
+        ep = EndpointId(type=r["type"], server=r["server"], port=r["port"])
+        return Node(
+            access_id=AccessId(value=r["access_id"], endpoint=ep),
+            raw_name=r["raw_name"],
+            params=json.loads(r["params"]),
+            source=r["sub_id"] or "",
+        )
 
     # ---- 标签（按 access_id，跟着节点走、不随订阅删除）----
 

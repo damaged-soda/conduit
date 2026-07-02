@@ -1,9 +1,13 @@
 # conduit-service 镜像（跑在 rig）。core(conduit) + service 一起装。
 # 构建上下文 = 仓库根（见 deploy/compose.yaml）。镜像里不带 db/secrets（见 .dockerignore）。
+ARG MIHOMO_IMAGE=metacubex/mihomo:v1.19.27
+FROM ${MIHOMO_IMAGE} AS mihomo
+
 FROM python:3.12-slim
 
 WORKDIR /app
 ARG CONDUIT_VERSION=0.0.0
+COPY --from=mihomo /mihomo /usr/local/bin/mihomo
 COPY pyproject.toml ./
 COPY conduit/ ./conduit/
 COPY service/ ./service/
@@ -11,6 +15,7 @@ RUN pip install --no-cache-dir '.[service]' && mkdir -p /data
 
 ENV CONDUIT_DB=/data/conduit.db
 ENV CONDUIT_VERSION=${CONDUIT_VERSION}
+ENV CONDUIT_MIHOMO_BIN=/usr/local/bin/mihomo
 EXPOSE 8000
 
 # 容器内绑 0.0.0.0（隔离 netns）；对外暴露由 compose 的端口映射控制（默认只到宿主 localhost）。

@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import pathlib
 import sys
+import threading
 
 import pytest
 import yaml
@@ -18,7 +20,9 @@ sys.path.insert(0, str(HERE.parent))  # repo root：conduit + service 包
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
+from conduit.ingest import normalize  # noqa: E402
 from service.app import create_app  # noqa: E402
+from service.udp_probe import probe_udp  # noqa: E402
 
 FIXTURE = (HERE / "fixtures" / "sub.clash.yaml").read_text()
 
@@ -174,6 +178,94 @@ def test_delete_subscription_removes_nodes():
     assert c.delete(f"/api/subscriptions/{sid}").status_code == 200
     assert c.get("/api/subscriptions").json() == []
     assert c.get("/api/nodes").json() == []
+
+
+def test_udp_probe_endpoint_uses_injected_probe_without_leaking_params():
+    seen = {}
+
+    def fake_probe(node):
+        seen["raw_name"] = node.raw_name
+        seen["password"] = node.params["password"]
+        return {
+            "status": "supported",
+            "ok": True,
+            "message": "ok",
+            "elapsed_ms": 12,
+            "target": "1.1.1.1:53",
+        }
+
+    c = TestClient(create_app(":memory:", udp_prober=fake_probe))
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    node = c.get(f"/api/subscriptions/{sid}/nodes").json()[0]
+
+    r = c.post(f"/api/nodes/{node['access_id']}/udp-probe")
+    assert r.status_code == 200
+    assert r.json() == {
+        "status": "supported",
+        "ok": True,
+        "message": "ok",
+        "elapsed_ms": 12,
+        "target": "1.1.1.1:53",
+    }
+    assert seen == {"raw_name": "🇺🇸 US-01 | 1x", "password": "pass1"}
+    assert "pass1" not in r.text
+
+
+def test_udp_probe_unknown_node_404():
+    c = _client()
+    assert c.post("/api/nodes/nope/udp-probe").status_code == 404
+
+
+def test_udp_probe_error_is_sanitized_502():
+    def boom(node):
+        raise RuntimeError("secret password p")
+
+    c = TestClient(create_app(":memory:", udp_prober=boom))
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    node = c.get(f"/api/subscriptions/{sid}/nodes").json()[0]
+
+    r = c.post(f"/api/nodes/{node['access_id']}/udp-probe")
+    assert r.status_code == 502
+    assert r.json()["detail"] == "UDP 探测失败"
+    assert "secret password" not in r.text
+
+
+def test_udp_probe_endpoint_limits_concurrency(monkeypatch):
+    monkeypatch.setenv("CONDUIT_UDP_PROBE_CONCURRENCY", "1")
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_probe(node):
+        entered.set()
+        release.wait(timeout=2)
+        return {"status": "supported", "ok": True, "message": "ok", "elapsed_ms": 1}
+
+    c = TestClient(create_app(":memory:", udp_prober=slow_probe))
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    aid = c.get(f"/api/subscriptions/{sid}/nodes").json()[0]["access_id"]
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(lambda: c.post(f"/api/nodes/{aid}/udp-probe"))
+        assert entered.wait(timeout=1)
+        second = c.post(f"/api/nodes/{aid}/udp-probe")
+        release.set()
+        first_response = first.result(timeout=2)
+
+    assert first_response.status_code == 200
+    assert second.status_code == 429
+
+
+def test_udp_probe_reports_unavailable_when_mihomo_missing(monkeypatch):
+    monkeypatch.setenv("CONDUIT_MIHOMO_BIN", "/no/such/mihomo")
+    node = normalize(FIXTURE, "auto", "probe-test")[0]
+
+    r = probe_udp(node)
+    assert r["status"] == "unavailable"
+    assert r["ok"] is None
+    assert "mihomo binary not found" in r["message"]
 
 
 def test_url_scheme_validated():

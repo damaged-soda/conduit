@@ -16,6 +16,7 @@ import os
 import pathlib
 import re
 import secrets
+import threading
 import tomllib
 from typing import Callable
 
@@ -32,6 +33,7 @@ from conduit.udp import node_supports_udp
 
 from .db import Store
 from .fetch import fetch_url
+from .udp_probe import probe_udp
 
 
 class SubIn(BaseModel):
@@ -103,6 +105,15 @@ def _runtime_meta() -> dict:
         "version": os.environ.get("CONDUIT_VERSION") or _package_version(),
         "deployed_at": os.environ.get("CONDUIT_DEPLOYED_AT") or _utc_now(),
     }
+
+
+def _udp_probe_concurrency() -> int:
+    raw = os.environ.get("CONDUIT_UDP_PROBE_CONCURRENCY", "2")
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 2
+    return max(1, min(value, 8))
 
 
 def _validate_matchers(r) -> None:
@@ -193,9 +204,14 @@ def _normalize_and_store(store: Store, sub: dict, raw: str, source_type: str) ->
     return {"imported": store.import_nodes(sub["id"], raw, nodes, source_type)}
 
 
-def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_url) -> FastAPI:
+def create_app(
+    db_path: str = ":memory:",
+    fetcher: Callable[[str], str] = fetch_url,
+    udp_prober: Callable = probe_udp,
+) -> FastAPI:
     store = Store(db_path)
     runtime_meta = _runtime_meta()
+    udp_probe_slots = threading.BoundedSemaphore(_udp_probe_concurrency())
     app = FastAPI(title="conduit-service", version=runtime_meta["version"])
 
     def _require(sub_id: str) -> dict:
@@ -203,6 +219,12 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
         if not sub:
             raise HTTPException(404, f"未知 subscription: {sub_id}")
         return sub
+
+    def _require_node(access_id: str):
+        node = store.node_for_render(access_id)
+        if node:
+            return node
+        raise HTTPException(404, "未知 node")
 
     def _with_region(rows: list[dict]) -> list[dict]:
         """给节点行补上 region（自动 + 覆盖 + 生效）+ 隔离状态，供页面展示/打标。"""
@@ -277,6 +299,18 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
             kwargs["quarantined"] = bool(body.quarantined)
         store.set_node_tag(access_id, **kwargs)
         return {"ok": True}
+
+    @app.post("/api/nodes/{access_id}/udp-probe")
+    def probe_node_udp(access_id: str):
+        node = _require_node(access_id)
+        if not udp_probe_slots.acquire(blocking=False):
+            raise HTTPException(429, "UDP 探测忙，请稍后重试")
+        try:
+            return udp_prober(node)
+        except Exception:
+            raise HTTPException(502, "UDP 探测失败")
+        finally:
+            udp_probe_slots.release()
 
     @app.post("/api/subscriptions/{sub_id}/import")
     def import_subscription(sub_id: str, body: ImportIn):
@@ -452,6 +486,7 @@ summary{cursor:pointer;font-weight:600;font-size:13px;padding:5px 8px;user-selec
 .nrow{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:3px 8px 3px 22px;font-size:12px;border-top:1px solid #f0f0f0}
 .nrow>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .nctl{display:flex;gap:6px;align-items:center;flex:none}
+.probe{min-width:56px;text-align:left}
 </style></head>
 <body>
 <div class="head"><h1>conduit</h1><div id="meta" class="muted meta"></div></div>
@@ -466,7 +501,7 @@ summary{cursor:pointer;font-weight:600;font-size:13px;padding:5px 8px;user-selec
 </div>
 <script>
 // 全部数据走 textContent / DOM，避免订阅来的 raw_name 等造成 XSS
-let SUBS=[], SEL=null, NOPEN=new Set(), MANUAL_MODE={};  // 记住展开地区 + 手动导入子模式
+let SUBS=[], SEL=null, NOPEN=new Set(), MANUAL_MODE={}, UDP_PROBES={};  // 记住展开地区 + 手动导入子模式；UDP 结果只放本页内存
 function el(t,x){const e=document.createElement(t);if(x!=null)e.textContent=x;return e}
 function input(ph,val){const e=document.createElement('input');e.type='text';e.placeholder=ph||'';if(val!=null)e.value=val;return e}
 function btn(label,fn){const b=el('button',label);b.onclick=fn;return b}
@@ -492,6 +527,24 @@ async function selectedFileText(f){
 }
 async function j(u,o){const r=await fetch(u,o);if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||r.status);return r.json()}
 function jpost(u,body){return j(u,{method:'POST',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined})}
+function probeText(r){
+  if(!r)return '';
+  if(r.ok===true)return 'UDP 可用';
+  if(r.ok===false)return 'UDP 不通';
+  if(r.status==='unavailable')return '探测不可用';
+  return '探测失败';
+}
+function renderProbeStatus(e,r){e.textContent=probeText(r);e.title=r?(r.message||''):''}
+async function probeUdp(n,b,s){
+  b.disabled=true;s.textContent='探测中';
+  try{
+    const r=await jpost('/api/nodes/'+encodeURIComponent(n.access_id)+'/udp-probe');
+    UDP_PROBES[n.access_id]=r;renderProbeStatus(s,r);
+  }catch(e){
+    const r={status:'error',ok:null,message:e.message};
+    UDP_PROBES[n.access_id]=r;renderProbeStatus(s,r);
+  }finally{b.disabled=false}
+}
 
 async function loadSubs(){
   SUBS=await j('/api/subscriptions');
@@ -650,7 +703,9 @@ function regionNode(region,list,box,allR){
     sel.onchange=async()=>{await setTag(n.access_id,sel.value,n.quarantined);await loadNodes(box)};
     const cb=document.createElement('input');cb.type='checkbox';cb.checked=!!n.quarantined;cb.title='隔离';
     cb.onchange=async()=>{await setTag(n.access_id,n.region_override,cb.checked);await loadNodes(box)};
-    const ctl=document.createElement('span');ctl.className='nctl';ctl.append(sel,cb);
+    const pstat=el('span','');pstat.className='muted probe';renderProbeStatus(pstat,UDP_PROBES[n.access_id]);
+    const pbtn=btn('UDP',()=>probeUdp(n,pbtn,pstat));pbtn.title='主动探测 UDP';
+    const ctl=document.createElement('span');ctl.className='nctl';ctl.append(sel,cb,pbtn,pstat);
     row.append(ctl);d.append(row);
   });
   return d;
