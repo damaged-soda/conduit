@@ -80,16 +80,17 @@ def test_import_uri_base64_subscription_with_default_type():
     assert node["raw_name"] == "S" and node["type"] == "ss"
 
 
-def test_import_reports_udp_filtered_nodes():
+def test_import_preserves_nodes_without_udp_support():
     c = _client()
     sid = _mksub(c)
     raw = (
         "proxies:\n"
         "  - {name: keep, type: ss, server: a.example.com, port: 8388, password: p, udp: true}\n"
-        "  - {name: drop, type: trojan, server: b.example.com, port: 443, password: p}\n"
+        "  - {name: no-udp-flag, type: trojan, server: b.example.com, port: 443, password: p}\n"
     )
     body = c.post(f"/api/subscriptions/{sid}/import", json={"raw": raw}).json()
-    assert body == {"imported": 1, "filtered_no_udp": 1}
+    assert body == {"imported": 2}
+    assert {n["raw_name"] for n in c.get(f"/api/subscriptions/{sid}/nodes").json()} == {"keep", "no-udp-flag"}
 
 
 def test_refresh_fetches_url_and_imports():
@@ -100,15 +101,15 @@ def test_refresh_fetches_url_and_imports():
     assert sub["source_type"] == "url" and sub["has_url"] == 1 and "url" not in sub
 
 
-def test_refresh_reports_udp_filtered_nodes():
+def test_refresh_preserves_nodes_without_udp_support():
     raw = (
         "proxies:\n"
         "  - {name: keep, type: ss, server: a.example.com, port: 8388, password: p, udp: true}\n"
-        "  - {name: drop, type: trojan, server: b.example.com, port: 443, password: p}\n"
+        "  - {name: no-udp-flag, type: trojan, server: b.example.com, port: 443, password: p}\n"
     )
     c = TestClient(create_app(":memory:", fetcher=lambda url: raw))
     sid = _mksub(c, "v", "https://example/sub")
-    assert c.post(f"/api/subscriptions/{sid}/refresh").json() == {"imported": 1, "filtered_no_udp": 1}
+    assert c.post(f"/api/subscriptions/{sid}/refresh").json() == {"imported": 2}
 
 
 def test_patch_rename():
@@ -270,6 +271,36 @@ def test_sub_clash_pure_has_proxies_groups_and_creds():
     assert cfg["rules"][-1] == "MATCH,PROXY"
     assert "tun" not in cfg and "dns" not in cfg  # 纯净版不带实例设置
     assert "pass1" in r.text  # 订阅含明文节点凭据（ss password）→ token 保护是对的
+
+
+def test_sub_clash_filters_legacy_nodes_without_udp(tmp_path):
+    import json
+    import sqlite3
+
+    p = tmp_path / "service.db"
+    c = TestClient(create_app(str(p)))
+    sid = _mksub(c)
+    conn = sqlite3.connect(p)
+    conn.execute(
+        "INSERT INTO nodes(access_id, sub_id, type, server, port, raw_name, params) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("legacy-keep", sid, "ss", "keep.example.com", 8388, "🇭🇰 HK 01", json.dumps({"password": "p", "udp": True})),
+    )
+    conn.execute(
+        "INSERT INTO nodes(access_id, sub_id, type, server, port, raw_name, params) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("legacy-drop", sid, "ss", "drop.example.com", 8388, "🇯🇵 JP 01", json.dumps({"password": "p"})),
+    )
+    conn.commit()
+    conn.close()
+
+    token = c.get("/api/sub-token").json()["token"]
+    cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
+    full_cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token, "full": 1}).text)
+    assert [p["name"] for p in cfg["proxies"]] == ["🇭🇰 HK 01"]
+    assert [p["name"] for p in full_cfg["proxies"]] == ["🇭🇰 HK 01"]
+    assert "HK" in c.get("/api/groups").json()["targets"]
+    assert "JP" not in c.get("/api/groups").json()["targets"]
 
 
 def test_sub_clash_has_clash_scaffolding():

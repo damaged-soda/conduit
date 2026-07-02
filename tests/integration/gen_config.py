@@ -21,7 +21,7 @@ from conduit.render import build_subscription  # noqa: E402
 
 def _node(name: str, server: str) -> Node:
     ep = EndpointId(type="socks5", server=server, port=1080)
-    return Node(access_id=AccessId(value=name, endpoint=ep), raw_name=name, params={}, source="it")
+    return Node(access_id=AccessId(value=name, endpoint=ep), raw_name=name, params={"udp": True}, source="it")
 
 
 def main() -> None:

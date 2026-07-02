@@ -42,38 +42,40 @@ def test_normalize_extracts_proxies_drops_rules():
     assert "type" not in us.params and "server" not in us.params
 
 
-def test_normalize_filters_proxies_without_udp_support():
+def test_normalize_preserves_proxies_without_udp_support():
     raw = (
         "proxies:\n"
         "  - {name: keep-ss, type: ss, server: a.example.com, port: 8388, password: p, udp: true}\n"
-        "  - {name: drop-missing, type: trojan, server: b.example.com, port: 443, password: p}\n"
-        "  - {name: drop-false, type: vless, server: c.example.com, port: 443, uuid: u, udp: false}\n"
+        "  - {name: no-udp-flag, type: trojan, server: b.example.com, port: 443, password: p}\n"
+        "  - {name: udp-false, type: vless, server: c.example.com, port: 443, uuid: u, udp: false}\n"
         "  - {name: keep-hy2, type: hysteria2, server: d.example.com, port: 443, password: p}\n"
-        "  - {name: drop-hy2-disabled, type: hysteria2, server: e.example.com, port: 443, password: p, udp: false}\n"
+        "  - {name: hy2-disabled, type: hysteria2, server: e.example.com, port: 443, password: p, udp: false}\n"
         "  - {name: keep-tuic, type: tuic, server: f.example.com, port: 443}\n"
         "  - {name: keep-wg, type: wireguard, server: g.example.com, port: 51820}\n"
     )
     nodes = normalize(raw, "clash", "vendor-a")
-    assert {n.raw_name for n in nodes} == {"keep-ss", "keep-hy2", "keep-tuic", "keep-wg"}
+    assert {n.raw_name for n in nodes} == {
+        "keep-ss", "no-udp-flag", "udp-false", "keep-hy2", "hy2-disabled", "keep-tuic", "keep-wg",
+    }
 
 
-def test_normalize_stats_counts_udp_filtered_nodes():
+def test_normalize_stats_counts_parsed_and_usable_nodes():
     raw = (
         "proxies:\n"
         "  - {name: keep, type: ss, server: a.example.com, port: 8388, password: p, udp: true}\n"
-        "  - {name: drop, type: trojan, server: b.example.com, port: 443, password: p}\n"
+        "  - {name: no-udp-flag, type: trojan, server: b.example.com, port: 443, password: p}\n"
         "  - {name: broken, type: ss}\n"
     )
     nodes, stats = normalize_with_stats(raw, "clash", "vendor-a")
-    assert [n.raw_name for n in nodes] == ["keep"]
-    assert stats == {"parsed": 3, "usable": 2, "filtered_no_udp": 1}
+    assert [n.raw_name for n in nodes] == ["keep", "no-udp-flag"]
+    assert stats == {"parsed": 3, "usable": 2}
 
 
-def test_uri_without_udp_is_filtered_by_policy():
+def test_uri_without_udp_is_preserved_for_render_policy():
     raw = "ss://" + _b64("aes-128-gcm:p") + "@s.example.com:8388#S"
     nodes, stats = normalize_with_stats(raw, "uri", "vendor-uri")
-    assert nodes == []
-    assert stats["filtered_no_udp"] == 1
+    assert [n.raw_name for n in nodes] == ["S"]
+    assert stats == {"parsed": 1, "usable": 1}
 
 
 def test_bad_port_raises_before_udp_filter():

@@ -27,6 +27,7 @@ def test_normalize_region():
 
 def _node(name: str, server: str = "s.com", port: int = 443, **params) -> Node:
     ep = EndpointId(type="trojan", server=server, port=port)
+    params.setdefault("udp", True)
     return Node(access_id=AccessId(value=f"{name}|{server}|{port}", endpoint=ep), raw_name=name, params=params, source="t")
 
 
@@ -86,6 +87,14 @@ def test_quarantine_excludes_node_and_empty_region():
     n1, n2 = _node("🇭🇰 HK 01", port=1), _node("🇯🇵 JP 01", port=2)
     cfg = build_subscription([n1, n2], {}, tags={n2.access_id.value: {"quarantined": True}})
     assert len(cfg["proxies"]) == 1  # JP 被隔离
+    names = {g["name"] for g in cfg["proxy-groups"]}
+    assert "HK" in names and "JP" not in names
+
+
+def test_non_udp_nodes_excluded_from_subscription():
+    n1, n2 = _node("🇭🇰 HK 01", port=1), _node("🇯🇵 JP 01", port=2, udp=False)
+    cfg = build_subscription([n1, n2], {})
+    assert len(cfg["proxies"]) == 1
     names = {g["name"] for g in cfg["proxy-groups"]}
     assert "HK" in names and "JP" not in names
 
