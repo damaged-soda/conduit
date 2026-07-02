@@ -38,6 +38,7 @@ DEFAULT_POLICY: dict = {
     # 路由：一组匹配 → 一个目标，顺序即优先级
     "routes": [
         {"name": "广告", "to": "REJECT", "geosite": ["category-ads-all"]},
+        {"name": "DBKOps", "to": "DIRECT", "domain_suffix": ["dbkops.com"]},
         {"name": "中国大陆", "to": "DIRECT", "geosite": ["cn"], "geoip": ["CN"]},
         {"name": "AI（ChatGPT/Claude…）", "to": "US", "rule_set": ["ai"]},
         {"name": "流媒体", "to": "HK", "rule_set": ["netflix", "disney", "youtube"]},

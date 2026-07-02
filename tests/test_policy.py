@@ -21,10 +21,12 @@ def _node(name: str) -> Node:
 def test_policy_rules_content_and_order():
     rules = policy_rules(DEFAULT_POLICY)
     assert "GEOSITE,category-ads-all,REJECT" in rules
+    assert "DOMAIN-SUFFIX,dbkops.com,DIRECT" in rules
     assert "GEOSITE,cn,DIRECT" in rules
     assert "GEOIP,CN,DIRECT,no-resolve" in rules
     # reject 在 direct 之前
-    assert rules.index("GEOSITE,category-ads-all,REJECT") < rules.index("GEOSITE,cn,DIRECT")
+    assert rules.index("GEOSITE,category-ads-all,REJECT") < rules.index("DOMAIN-SUFFIX,dbkops.com,DIRECT")
+    assert rules.index("DOMAIN-SUFFIX,dbkops.com,DIRECT") < rules.index("GEOSITE,cn,DIRECT")
 
 
 def test_empty_policy_yields_no_rules():
@@ -62,6 +64,7 @@ def test_full_mode_dns_tun_from_direct_routes():
 def test_full_dns_has_default_nameserver():
     cfg = build_subscription([_node("🇭🇰 HK 01")], {}, full=True)
     assert "system" in cfg["dns"]["default-nameserver"]  # 引导 DNS（关键修复：没它出网会断）
+    assert "+.dbkops.com" in cfg["dns"]["fake-ip-filter"]
 
 
 def test_full_dns_configurable():
