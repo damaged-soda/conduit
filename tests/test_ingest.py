@@ -18,7 +18,7 @@ sys.path.insert(0, str(HERE))           # for test_config_invariants
 sys.path.insert(0, str(HERE.parent))    # repo root, for the conduit package
 
 from conduit.identity import access_id, endpoint_id  # noqa: E402
-from conduit.ingest import normalize  # noqa: E402
+from conduit.ingest import normalize, normalize_with_stats  # noqa: E402
 from conduit.render import render  # noqa: E402
 from test_config_invariants import DIRECT, all_violations  # noqa: E402
 
@@ -42,6 +42,46 @@ def test_normalize_extracts_proxies_drops_rules():
     assert "type" not in us.params and "server" not in us.params
 
 
+def test_normalize_filters_proxies_without_udp_support():
+    raw = (
+        "proxies:\n"
+        "  - {name: keep-ss, type: ss, server: a.example.com, port: 8388, password: p, udp: true}\n"
+        "  - {name: drop-missing, type: trojan, server: b.example.com, port: 443, password: p}\n"
+        "  - {name: drop-false, type: vless, server: c.example.com, port: 443, uuid: u, udp: false}\n"
+        "  - {name: keep-hy2, type: hysteria2, server: d.example.com, port: 443, password: p}\n"
+        "  - {name: drop-hy2-disabled, type: hysteria2, server: e.example.com, port: 443, password: p, udp: false}\n"
+        "  - {name: keep-tuic, type: tuic, server: f.example.com, port: 443}\n"
+        "  - {name: keep-wg, type: wireguard, server: g.example.com, port: 51820}\n"
+    )
+    nodes = normalize(raw, "clash", "vendor-a")
+    assert {n.raw_name for n in nodes} == {"keep-ss", "keep-hy2", "keep-tuic", "keep-wg"}
+
+
+def test_normalize_stats_counts_udp_filtered_nodes():
+    raw = (
+        "proxies:\n"
+        "  - {name: keep, type: ss, server: a.example.com, port: 8388, password: p, udp: true}\n"
+        "  - {name: drop, type: trojan, server: b.example.com, port: 443, password: p}\n"
+        "  - {name: broken, type: ss}\n"
+    )
+    nodes, stats = normalize_with_stats(raw, "clash", "vendor-a")
+    assert [n.raw_name for n in nodes] == ["keep"]
+    assert stats == {"parsed": 3, "usable": 2, "filtered_no_udp": 1}
+
+
+def test_uri_without_udp_is_filtered_by_policy():
+    raw = "ss://" + _b64("aes-128-gcm:p") + "@s.example.com:8388#S"
+    nodes, stats = normalize_with_stats(raw, "uri", "vendor-uri")
+    assert nodes == []
+    assert stats["filtered_no_udp"] == 1
+
+
+def test_bad_port_raises_before_udp_filter():
+    raw = "proxies:\n  - {name: bad, type: ss, server: s.com, port: NOTAPORT, password: p}\n"
+    with pytest.raises(ValueError):
+        normalize(raw, "clash", "vendor-a")
+
+
 def test_access_id_stable_across_rename_but_sensitive_to_params():
     base = {"name": "A", "type": "ss", "server": "s.com", "port": 8388, "cipher": "aes-256-gcm", "password": "p"}
     assert access_id(base).value == access_id({**base, "name": "B 完全不同"}).value   # 改名不变
@@ -61,7 +101,7 @@ def test_server_normalized_in_identity():
 
 
 def test_dedup_same_access_id_across_imports():
-    p = "proxies:\n  - {name: X, type: ss, server: s.com, port: 8388, password: p}\n"
+    p = "proxies:\n  - {name: X, type: ss, server: s.com, port: 8388, password: p, udp: true}\n"
     assert normalize(p, "clash", "vendor-a")[0].access_id.value == normalize(p, "clash", "vendor-b")[0].access_id.value
 
 
@@ -69,7 +109,7 @@ def test_vmess_ws_params_preserved():
     raw = (
         "proxies:\n"
         "  - {name: v, type: vmess, server: v.com, port: 443, uuid: u-1, alterId: 0, cipher: auto,"
-        " network: ws, ws-opts: {path: /ray, headers: {Host: v.com}}}\n"
+        " network: ws, ws-opts: {path: /ray, headers: {Host: v.com}}, udp: true}\n"
     )
     n = normalize(raw)[0]
     assert n.params["network"] == "ws"
@@ -90,15 +130,16 @@ def test_normalize_uri_subscription_lines():
         "tls": "tls",
         "sni": "vm.example.com",
         "fp": "chrome",
+        "udp": True,
     }))
     raw = "\n".join([
         "ss://"
         + _b64("aes-256-gcm:ss-pass")
-        + "@SS.Example.com:8388?plugin=obfs-local%3Bobfs%3Dtls%3Bobfs-host%3Dcdn.example.com#SS",
+        + "@SS.Example.com:8388?udp=1&plugin=obfs-local%3Bobfs%3Dtls%3Bobfs-host%3Dcdn.example.com#SS",
         f"vmess://{vmess}",
-        "trojan://tj-pass@tj.example.com:443?sni=tj.example.com&type=ws&host=cdn.example.com&path=%2Fws#TJ",
+        "trojan://tj-pass@tj.example.com:443?sni=tj.example.com&type=ws&host=cdn.example.com&path=%2Fws&udp=1#TJ",
         "vless://uuid-2@vl.example.com:443?security=reality&sni=www.example.com&fp=chrome"
-        "&pbk=pubkey&sid=abcd&type=grpc&serviceName=svc&flow=xtls-rprx-vision#VL",
+        "&pbk=pubkey&sid=abcd&type=grpc&serviceName=svc&flow=xtls-rprx-vision&udp=1#VL",
         "hy2://hy-pass@hy.example.com:443?sni=hy.example.com&obfs=salamander"
         "&obfs-password=obfs-pass#HY2",
     ])
@@ -115,7 +156,7 @@ def test_normalize_uri_subscription_lines():
 
 
 def test_normalize_base64_wrapped_uri_subscription():
-    raw = "ss://" + _b64("aes-128-gcm:p") + "@s.example.com:8388#S"
+    raw = "ss://" + _b64("aes-128-gcm:p") + "@s.example.com:8388?udp=1#S"
     nodes = normalize(base64.b64encode(raw.encode()).decode(), "base64", "vendor-b64")
     assert len(nodes) == 1
     assert nodes[0].raw_name == "S"
