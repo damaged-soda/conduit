@@ -93,6 +93,24 @@ def test_import_preserves_nodes_without_udp_support():
     assert {n["raw_name"] for n in c.get(f"/api/subscriptions/{sid}/nodes").json()} == {"keep", "no-udp-flag"}
 
 
+def test_reimport_prunes_nodes_missing_from_latest_snapshot():
+    c = _client()
+    sid = _mksub(c)
+    raw1 = (
+        "proxies:\n"
+        "  - {name: keep, type: ss, server: a.example.com, port: 8388, password: p, udp: true}\n"
+        "  - {name: stale, type: ss, server: b.example.com, port: 8388, password: p, udp: true}\n"
+    )
+    raw2 = (
+        "proxies:\n"
+        "  - {name: keep, type: ss, server: a.example.com, port: 8388, password: p, udp: true}\n"
+    )
+
+    assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": raw1}).json()["imported"] == 2
+    assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": raw2}).json()["imported"] == 1
+    assert {n["raw_name"] for n in c.get(f"/api/subscriptions/{sid}/nodes").json()} == {"keep"}
+
+
 def test_refresh_fetches_url_and_imports():
     c = TestClient(create_app(":memory:", fetcher=lambda url: FIXTURE))
     sid = _mksub(c, "v", "https://example/sub")

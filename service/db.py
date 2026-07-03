@@ -171,6 +171,7 @@ class Store:
         （「全局池，后导入者赢」）。真·多订阅归属 = later（需要成员表）。
         """
         source_type = _check_source_type(source_type)
+        incoming_ids = {n.access_id.value for n in nodes}
         with self._lock:
             try:
                 self._conn.execute(
@@ -186,6 +187,18 @@ class Store:
                         "params=excluded.params, last_seen=datetime('now')",
                         (n.access_id.value, sub_id, ep.type, ep.server, ep.port, n.raw_name,
                          json.dumps(n.params, ensure_ascii=False)),
+                    )
+                if incoming_ids:
+                    stale = [
+                        r["access_id"]
+                        for r in self._conn.execute(
+                            "SELECT access_id FROM nodes WHERE sub_id = ?", (sub_id,)
+                        ).fetchall()
+                        if r["access_id"] not in incoming_ids
+                    ]
+                    self._conn.executemany(
+                        "DELETE FROM nodes WHERE sub_id = ? AND access_id = ?",
+                        [(sub_id, aid) for aid in stale],
                     )
                 self._conn.commit()
             except Exception:
