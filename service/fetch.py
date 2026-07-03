@@ -9,13 +9,16 @@ from __future__ import annotations
 import httpx
 
 _MAX_BYTES = 5 * 1024 * 1024  # 订阅响应大小上限（5 MiB）：防坏 URL 撑爆内存 / DB
+_SUBSCRIPTION_UA = "clash.meta"
 
 
 def fetch_url(url: str, timeout: float = 20.0) -> str:
     """GET 一个订阅 URL，返回正文（跟随重定向，限大小）。失败抛异常，由调用方映射成 5xx。"""
     chunks: list[bytes] = []
     total = 0
-    headers = {"user-agent": "mihomo/1.18.3 conduit/0.0"}
+    # Some providers return a reduced URI-style feed for generic/mihomo UAs and omit fields like
+    # `udp: true`. Prefer the Clash.Meta representation so ingest sees the full proxy metadata.
+    headers = {"user-agent": _SUBSCRIPTION_UA}
     with httpx.stream("GET", url, timeout=timeout, follow_redirects=True, headers=headers) as r:
         r.raise_for_status()
         for chunk in r.iter_bytes():

@@ -20,6 +20,12 @@ import json
 
 from .models import AccessId, EndpointId
 
+_CORE_KEYS = {"name", "type", "server", "port"}
+_IDENTITY_IGNORED_KEYS = {
+    "udp",  # local capability flag; providers may omit or add it for the same node
+    "tfo",  # client-side TCP fast open preference
+}
+
 
 def _core(proxy: dict) -> tuple[str, str, int]:
     """规范化核心三元组（endpoint 与 access_id 共用，保证一致）。"""
@@ -37,7 +43,11 @@ def endpoint_id(proxy: dict) -> EndpointId:
 
 def access_id(proxy: dict) -> AccessId:
     t, s, p = _core(proxy)
-    rest = {k: v for k, v in proxy.items() if k not in ("name", "type", "server", "port")}
+    rest = {
+        k: v
+        for k, v in proxy.items()
+        if k not in _CORE_KEYS and k not in _IDENTITY_IGNORED_KEYS
+    }
     canonical = json.dumps({"type": t, "server": s, "port": p, **rest}, sort_keys=True, ensure_ascii=False, default=str)
     h = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return AccessId(value=h, endpoint=EndpointId(type=t, server=s, port=p))

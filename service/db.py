@@ -17,6 +17,7 @@ import secrets
 import sqlite3
 import threading
 
+from conduit.identity import access_id as compute_access_id
 from conduit.models import AccessId, EndpointId, Node
 
 _SCHEMA = """
@@ -105,7 +106,62 @@ class Store:
         import_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(imports)").fetchall()}
         if "source_type" not in import_cols:
             self._conn.execute("ALTER TABLE imports ADD COLUMN source_type TEXT NOT NULL DEFAULT 'file'")
+        self._migrate_access_ids_locked()
         self._conn.commit()
+
+    def _merge_node_tag_locked(self, old_id: str, new_id: str) -> None:
+        if old_id == new_id:
+            return
+        old = self._conn.execute(
+            "SELECT region, quarantined FROM node_tags WHERE access_id = ?", (old_id,)
+        ).fetchone()
+        if not old:
+            return
+        new = self._conn.execute(
+            "SELECT region, quarantined FROM node_tags WHERE access_id = ?", (new_id,)
+        ).fetchone()
+        if new:
+            region = new["region"] or old["region"]
+            quarantined = int(bool(new["quarantined"]) or bool(old["quarantined"]))
+            self._conn.execute(
+                "UPDATE node_tags SET region = ?, quarantined = ? WHERE access_id = ?",
+                (region, quarantined, new_id),
+            )
+            self._conn.execute("DELETE FROM node_tags WHERE access_id = ?", (old_id,))
+        else:
+            self._conn.execute("UPDATE node_tags SET access_id = ? WHERE access_id = ?", (new_id, old_id))
+
+    def _migrate_access_ids_locked(self) -> None:
+        """Recompute IDs after identity-only metadata keys change, preserving node tags."""
+        rows = self._conn.execute(
+            "SELECT access_id, sub_id, type, server, port, raw_name, params, first_seen, last_seen FROM nodes"
+        ).fetchall()
+        for r in rows:
+            old_id = r["access_id"]
+            params = json.loads(r["params"])
+            new_id = compute_access_id(
+                {"type": r["type"], "server": r["server"], "port": r["port"], **params}
+            ).value
+            if new_id == old_id:
+                continue
+            target = self._conn.execute(
+                "SELECT access_id FROM nodes WHERE access_id = ?", (new_id,)
+            ).fetchone()
+            if target:
+                self._conn.execute(
+                    "UPDATE nodes SET sub_id = ?, type = ?, server = ?, port = ?, raw_name = ?, "
+                    "params = ?, first_seen = min(first_seen, ?), last_seen = max(last_seen, ?) "
+                    "WHERE access_id = ?",
+                    (
+                        r["sub_id"], r["type"], r["server"], r["port"], r["raw_name"], r["params"],
+                        r["first_seen"], r["last_seen"], new_id,
+                    ),
+                )
+                self._merge_node_tag_locked(old_id, new_id)
+                self._conn.execute("DELETE FROM nodes WHERE access_id = ?", (old_id,))
+            else:
+                self._conn.execute("UPDATE nodes SET access_id = ? WHERE access_id = ?", (new_id, old_id))
+                self._merge_node_tag_locked(old_id, new_id)
 
     # ---- subscriptions ----
 
