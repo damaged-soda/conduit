@@ -125,6 +125,14 @@ def _fake_ip_filter(direct: dict) -> list[str]:
     return out
 
 
+def _dedupe(seq: list[str]) -> list[str]:
+    out: list[str] = []
+    for x in seq:
+        if x not in out:
+            out.append(x)
+    return out
+
+
 def build_config(nodes: list[Node], direct: dict, overlay: dict) -> dict:
     """渲染成 mihomo 配置 dict（rules 顺序关键：direct-list 必须在最前）。"""
     nodes = [n for n in nodes if node_supports_udp(n)]
@@ -233,6 +241,7 @@ def build_subscription(
     if full:
         # rule#0 三处之二（fake-ip-filter + tun route-exclude）：从 policy 里 to==DIRECT 的 route 派生
         # 显式域名/IP（tailnet/DERP/控制面），让它们解析真 IP + 不被 TUN 抓走。
+        # 同时交给 sniffer：TUN 接管 IPv6 后，纯 IP 连接仍可用 SNI/Host 还原域名并命中 DIRECT。
         d_domains: list[str] = []
         d_ips: list[str] = []
         for r in policy.get("routes", []):
@@ -240,6 +249,7 @@ def build_subscription(
                 d_domains += [f"+.{x}" for x in r.get("domain_suffix", [])] + list(r.get("domain", []))
                 d_ips += list(r.get("ip_cidr", []))
         pdns = policy.get("dns", {})
+        direct_domains = _fake_ip_filter(direct)
         dns = {
             "enable": True,
             # ipv6:true + tun.inet6-address：必须让 TUN 同时接管 IPv6，否则系统 IPv6 默认路由仍在物理网卡上，
@@ -251,7 +261,7 @@ def build_subscription(
             # 含 system → 任何环境都能引导（用 OS 解析器）。可被 policy.dns.default_nameserver 覆盖。
             "default-nameserver": pdns.get("default_nameserver") or ["system", "223.5.5.5", "8.8.8.8"],
             "nameserver": pdns.get("nameserver") or ["https://1.1.1.1/dns-query"],
-            "fake-ip-filter": ["*.lan", "*.local", "*.arpa", *_fake_ip_filter(direct), *d_domains],
+            "fake-ip-filter": ["*.lan", "*.local", "*.arpa", *direct_domains, *d_domains],
         }
         if pdns.get("fallback"):
             dns["fallback"] = pdns["fallback"]
@@ -259,6 +269,18 @@ def build_subscription(
         if nsp:  # 如 {'+.ts.net': '100.100.100.100'} —— tailnet 走 MagicDNS
             dns["nameserver-policy"] = nsp
         cfg["dns"] = dns
+        sniff_domains = _dedupe([*direct_domains, *d_domains])
+        if sniff_domains:
+            cfg["sniffer"] = {
+                "enable": True,
+                "parse-pure-ip": True,
+                "force-domain": sniff_domains,
+                "sniff": {
+                    "TLS": {"ports": [443], "override-destination": True},
+                    "HTTP": {"ports": [80], "override-destination": True},
+                    "QUIC": {"ports": [443], "override-destination": True},
+                },
+            }
         cfg["ipv6"] = True  # 全局开 IPv6，配合 tun.inet6-address 让 TUN 接管 IPv6，堵住 IPv6 leak
         cfg["tun"] = {
             "enable": True,
