@@ -59,6 +59,30 @@ def test_full_mode_dns_tun_from_direct_routes():
     assert "123.57.92.37/32" in cfg["tun"]["route-exclude-address"]
 
 
+def test_full_mode_sniffer_restores_direct_domain_context():
+    pol = {"routes": [{"to": "DIRECT", "domain_suffix": ["tailscale.com"], "domain": ["derp.example"],
+                       "ip_cidr": ["123.57.92.37/32"]}], "final": "PROXY"}
+    direct = {"domain_suffix": ["corp.example", "tailscale.com"]}
+    cfg = build_subscription([_node("🇭🇰 HK 01")], direct, full=True, policy=pol)
+    sniffer = cfg["sniffer"]
+    assert sniffer["enable"] is True
+    assert sniffer["parse-pure-ip"] is True
+    assert sniffer["sniff"]["TLS"] == {"ports": [443], "override-destination": True}
+    assert sniffer["sniff"]["HTTP"] == {"ports": [80], "override-destination": True}
+    assert sniffer["sniff"]["QUIC"] == {"ports": [443], "override-destination": True}
+    assert "+.corp.example" in sniffer["force-domain"]
+    assert "+.tailscale.com" in sniffer["force-domain"]
+    assert "derp.example" in sniffer["force-domain"]
+    assert "123.57.92.37/32" not in sniffer["force-domain"]
+    assert sniffer["force-domain"].count("+.tailscale.com") == 1
+
+
+def test_sniffer_only_for_full_configs_with_direct_domains():
+    pol = {"routes": [{"to": "DIRECT", "geoip": ["CN"]}], "final": "PROXY"}
+    assert "sniffer" not in build_subscription([_node("🇭🇰 HK 01")], {"domain_suffix": ["corp.example"]}, policy=pol)
+    assert "sniffer" not in build_subscription([_node("🇭🇰 HK 01")], {}, full=True, policy=pol)
+
+
 def test_full_dns_has_default_nameserver():
     cfg = build_subscription([_node("🇭🇰 HK 01")], {}, full=True)
     assert "system" in cfg["dns"]["default-nameserver"]  # 引导 DNS（关键修复：没它出网会断）
