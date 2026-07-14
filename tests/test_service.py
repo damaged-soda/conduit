@@ -48,6 +48,7 @@ def test_page_exposes_subscription_priority_controls():
     assert "越靠上优先级越高" in page
     assert "拖动排序；聚焦后按 ↑ / ↓ 移动" in page
     assert "onpointermove" in page  # 触屏 Pointer Events 路径
+    assert "dropEffect==='none'" in page  # 鼠标 Esc / 无效落点取消时恢复原序
     assert "/api/subscriptions/order" in page
     assert "客户端刷新订阅后生效" in page
 
