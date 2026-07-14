@@ -6,6 +6,8 @@ import pathlib
 import sqlite3
 import sys
 
+import yaml
+
 HERE = pathlib.Path(__file__).parent
 sys.path.insert(0, str(HERE.parent))
 
@@ -127,3 +129,64 @@ def test_store_merges_legacy_access_id_collisions(tmp_path):
     assert rows[0]["last_seen"] == "2022-01-01 00:00:00"
     assert migrated.nodes_for_render()[0].params["udp"] is True
     assert migrated.get_node_tags() == {stable_id: {"region": "SG", "quarantined": True}}
+
+
+def test_store_migrates_subscription_and_node_order_from_latest_import(tmp_path):
+    path = tmp_path / "legacy-order.db"
+    first = {
+        "name": "SG first", "type": "ss", "server": "first.example", "port": 1,
+        "password": "p", "udp": True,
+    }
+    second = {
+        "name": "SG second", "type": "ss", "server": "second.example", "port": 2,
+        "password": "p", "udp": True,
+    }
+    raw = yaml.safe_dump({"proxies": [first, second]}, sort_keys=False)
+
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE subscriptions (
+          id TEXT PRIMARY KEY, name TEXT, type TEXT, note TEXT, source_type TEXT, url TEXT,
+          created_at TEXT
+        );
+        CREATE TABLE imports (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, sub_id TEXT, raw TEXT, source_type TEXT,
+          node_count INTEGER, at TEXT
+        );
+        CREATE TABLE nodes (
+          access_id TEXT PRIMARY KEY, sub_id TEXT, type TEXT, server TEXT, port INTEGER,
+          raw_name TEXT, params TEXT, first_seen TEXT, last_seen TEXT
+        );
+        """
+    )
+    # 故意让插入顺序与创建时间、上游节点顺序相反，验证迁移使用正确事实源。
+    conn.execute(
+        "INSERT INTO subscriptions VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("late", "Late", "auto", "", "file", None, "2025-02-01 00:00:00"),
+    )
+    conn.execute(
+        "INSERT INTO subscriptions VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("early", "Early", "auto", "", "file", None, "2025-01-01 00:00:00"),
+    )
+    conn.execute(
+        "INSERT INTO imports(sub_id, raw, source_type, node_count, at) VALUES (?, ?, ?, ?, ?)",
+        ("early", raw, "file", 2, "2025-03-01 00:00:00"),
+    )
+    for proxy in (second, first):
+        aid = access_id(proxy).value
+        params = {k: v for k, v in proxy.items() if k not in {"name", "type", "server", "port"}}
+        conn.execute(
+            "INSERT INTO nodes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                aid, "early", proxy["type"], proxy["server"], proxy["port"], proxy["name"],
+                json.dumps(params), "2025-01-01 00:00:00", "2025-03-01 00:00:00",
+            ),
+        )
+    conn.commit()
+    conn.close()
+
+    migrated = Store(str(path))
+    assert [sub["id"] for sub in migrated.list_subscriptions()] == ["early", "late"]
+    assert [node["raw_name"] for node in migrated.list_nodes("early")] == ["SG first", "SG second"]
+    assert [node["position"] for node in migrated.list_nodes("early")] == [0, 1]

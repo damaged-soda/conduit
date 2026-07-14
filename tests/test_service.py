@@ -43,6 +43,15 @@ def test_meta_uses_runtime_env(monkeypatch):
     }
 
 
+def test_page_exposes_subscription_priority_controls():
+    page = _client().get("/").text
+    assert "越靠上优先级越高" in page
+    assert "拖动排序；聚焦后按 ↑ / ↓ 移动" in page
+    assert "onpointermove" in page  # 触屏 Pointer Events 路径
+    assert "/api/subscriptions/order" in page
+    assert "客户端刷新订阅后生效" in page
+
+
 def test_create_returns_opaque_id_and_lists_name():
     c = _client()
     sid = _mksub(c, "My VPN")
@@ -50,6 +59,24 @@ def test_create_returns_opaque_id_and_lists_name():
     assert sub["id"] == sid and sub["name"] == "My VPN"
     assert sub["source_type"] == "file"
     assert sid != "My VPN" and "url" not in sub  # id 不透明、url 不泄露
+
+
+def test_subscription_order_is_atomic_and_new_subscriptions_append():
+    c = _client()
+    a, b, c_id = _mksub(c, "A"), _mksub(c, "B"), _mksub(c, "C")
+    assert [s["id"] for s in c.get("/api/subscriptions").json()] == [a, b, c_id]
+
+    assert c.put("/api/subscriptions/order", json={"ids": [c_id, a, b]}).json() == {"ok": True}
+    listed = c.get("/api/subscriptions").json()
+    assert [s["id"] for s in listed] == [c_id, a, b]
+    assert [s["position"] for s in listed] == [0, 1, 2]
+
+    d = _mksub(c, "D")
+    assert [s["id"] for s in c.get("/api/subscriptions").json()] == [c_id, a, b, d]
+
+    # 缺失 / 重复 id 都拒绝，且旧顺序保持不变。
+    assert c.put("/api/subscriptions/order", json={"ids": [a, a, b, d]}).status_code == 400
+    assert [s["id"] for s in c.get("/api/subscriptions").json()] == [c_id, a, b, d]
 
 
 def test_subscription_detail_returns_url_for_editor_only():
@@ -68,6 +95,46 @@ def test_import_into_subscription_and_detail_nodes():
     assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE}).json()["imported"] == 2
     assert len(c.get(f"/api/subscriptions/{sid}/nodes").json()) == 2
     assert "params" not in c.get(f"/api/subscriptions/{sid}/nodes").json()[0]  # 不泄露凭据
+
+
+def test_import_replaces_snapshot_and_preserves_upstream_order():
+    c = _client()
+    sid = _mksub(c)
+    first = yaml.safe_dump({"proxies": [
+        {"name": "SG 2", "type": "ss", "server": "s2.example", "port": 2, "password": "p", "udp": True},
+        {"name": "SG stale", "type": "ss", "server": "stale.example", "port": 3, "password": "p", "udp": True},
+        {"name": "SG 1", "type": "ss", "server": "s1.example", "port": 1, "password": "p", "udp": True},
+    ]}, sort_keys=False)
+    second = yaml.safe_dump({"proxies": [
+        {"name": "SG 1", "type": "ss", "server": "s1.example", "port": 1, "password": "p", "udp": True},
+        {"name": "SG 2", "type": "ss", "server": "s2.example", "port": 2, "password": "p", "udp": True},
+    ]}, sort_keys=False)
+
+    assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": first}).json() == {"imported": 3}
+    assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": second}).json() == {"imported": 2}
+    nodes = c.get(f"/api/subscriptions/{sid}/nodes").json()
+    assert [n["raw_name"] for n in nodes] == ["SG 1", "SG 2"]
+    assert [n["position"] for n in nodes] == [0, 1]
+
+
+def test_same_access_node_is_retained_per_subscription():
+    c = _client()
+    a, b = _mksub(c, "A"), _mksub(c, "B")
+    raw = yaml.safe_dump({"proxies": [
+        {"name": "Singapore", "type": "ss", "server": "same.example", "port": 443,
+         "password": "p", "udp": True},
+    ]}, sort_keys=False)
+    c.post(f"/api/subscriptions/{a}/import", json={"raw": raw})
+    c.post(f"/api/subscriptions/{b}/import", json={"raw": raw})
+
+    nodes = c.get("/api/nodes").json()
+    assert len(nodes) == 2
+    assert nodes[0]["access_id"] == nodes[1]["access_id"]
+    token = c.get("/api/sub-token").json()["token"]
+    cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
+    assert [proxy["name"] for proxy in cfg["proxies"]] == [
+        "[A] Singapore", "[B] Singapore"
+    ]
 
 
 def test_import_uri_base64_subscription_with_default_type():
@@ -203,7 +270,9 @@ def test_import_unknown_sub_404():
 def test_malformed_yaml_import_returns_400():
     c = _client()
     sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
     assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": "proxies: 'unterminated"}).status_code == 400
+    assert len(c.get(f"/api/subscriptions/{sid}/nodes").json()) == 2  # 失败不替换旧快照
 
 
 def test_bad_proxy_import_sanitized_400():
@@ -273,6 +342,41 @@ def test_sub_clash_pure_has_proxies_groups_and_creds():
     assert "pass1" in r.text  # 订阅含明文节点凭据（ss password）→ token 保护是对的
 
 
+def test_sub_clash_uses_subscription_priority_prefix_and_stable_region_order():
+    c = _client()
+    low, high = _mksub(c, "Low"), _mksub(c, "High")
+    low_raw = yaml.safe_dump({"proxies": [
+        {"name": "Singapore low 2", "type": "ss", "server": "low2.example", "port": 2, "password": "p", "udp": True},
+        {"name": "Hong Kong low", "type": "ss", "server": "lowhk.example", "port": 3, "password": "p", "udp": True},
+        {"name": "Singapore low 1", "type": "ss", "server": "low1.example", "port": 1, "password": "p", "udp": True},
+    ]}, sort_keys=False)
+    high_raw = yaml.safe_dump({"proxies": [
+        {"name": "Singapore high", "type": "ss", "server": "high.example", "port": 4, "password": "p", "udp": True},
+        {"name": "Japan high", "type": "ss", "server": "highjp.example", "port": 5, "password": "p", "udp": True},
+    ]}, sort_keys=False)
+    c.post(f"/api/subscriptions/{low}/import", json={"raw": low_raw})
+    c.post(f"/api/subscriptions/{high}/import", json={"raw": high_raw})
+    c.put("/api/subscriptions/order", json={"ids": [high, low]})
+
+    token = c.get("/api/sub-token").json()["token"]
+    cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
+    names = [proxy["name"] for proxy in cfg["proxies"]]
+    assert names == [
+        "[High] Singapore high", "[High] Japan high", "[Low] Singapore low 2",
+        "[Low] Hong Kong low", "[Low] Singapore low 1"
+    ]
+    groups = {group["name"]: group for group in cfg["proxy-groups"]}
+    assert groups["SG"]["proxies"] == [
+        "[High] Singapore high", "[Low] Singapore low 2", "[Low] Singapore low 1"
+    ]
+    assert groups["AUTO-FAST"]["proxies"] == names
+    assert groups["PROXY"]["proxies"] == ["AUTO", "HK", "JP", "SG"]
+
+    c.patch(f"/api/subscriptions/{high}", json={"name": "Gold"})
+    renamed = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
+    assert renamed["proxies"][0]["name"] == "[Gold] Singapore high"
+
+
 def test_sub_clash_filters_legacy_nodes_without_udp(tmp_path):
     import json
     import sqlite3
@@ -297,8 +401,8 @@ def test_sub_clash_filters_legacy_nodes_without_udp(tmp_path):
     token = c.get("/api/sub-token").json()["token"]
     cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
     full_cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token, "full": 1}).text)
-    assert [p["name"] for p in cfg["proxies"]] == ["🇭🇰 HK 01"]
-    assert [p["name"] for p in full_cfg["proxies"]] == ["🇭🇰 HK 01"]
+    assert [p["name"] for p in cfg["proxies"]] == ["[vendor-a] 🇭🇰 HK 01"]
+    assert [p["name"] for p in full_cfg["proxies"]] == ["[vendor-a] 🇭🇰 HK 01"]
     assert "HK" in c.get("/api/groups").json()["targets"]
     assert "JP" not in c.get("/api/groups").json()["targets"]
 

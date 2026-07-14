@@ -18,14 +18,22 @@ CONDUIT_BIND=<rig 私有网 IP> docker compose -f deploy/compose.yaml up -d
 pip install -e '.[service]'
 uvicorn --factory service.app:make_app   # DB 路径用 CONDUIT_DB，默认 conduit.db
 ```
-打开 http://127.0.0.1:8000 ：建订阅（选择链接 / 文件 / 文本来源）→ 导入/刷新 → 看节点池 → 给节点打地区标签 → 编辑分流策略 → 复制订阅链接导进 clash-verge/mihomo。
+打开 http://127.0.0.1:8000 ：建订阅（选择链接 / 文件 / 文本来源）→ 拖动订阅设置优先级 →
+导入/刷新 → 看节点池 → 给节点打地区标签 → 编辑分流策略 → 复制订阅链接导进
+clash-verge/mihomo。
 
 ## 现在有什么
 **订阅 / 节点**
 - `GET /api/meta`（版本 / 最近部署时间）
-- `POST /api/subscriptions`、`GET /api/subscriptions`（列表不回显 URL，只给 `source_type`/`has_url`）、`GET/PATCH /api/subscriptions/{id}`（管理页编辑用，回显 URL）、`POST /api/subscriptions/{id}/import`（手动来源导入）、`POST /api/subscriptions/{id}/refresh`（URL 来源拉取）
+- `POST /api/subscriptions`、`GET /api/subscriptions`（按优先级从高到低，即 `position` 升序返回；不回显 URL，只给
+  `source_type`/`has_url`）、`PUT /api/subscriptions/order`（完整 id 列表原子换序）、
+  `GET/PATCH /api/subscriptions/{id}`（管理页编辑用，回显 URL）、
+  `POST /api/subscriptions/{id}/import`（手动来源导入）、
+  `POST /api/subscriptions/{id}/refresh`（URL 来源拉取）
 - 来源模型：`subscriptions.source_type` 为 `file|url`，当前来源二选一；`url` 来源必须有 URL 且只能刷新，`file` 来源无 URL 且只能手动导入。页面里的文件 / 文本只是手动导入的两种输入方式。`imports` 只记录每次 raw 快照及其来源类型，不代表第二个活动来源。
-- 导入格式：Clash/Mihomo YAML、URI 行订阅（ss/vmess/trojan/vless/hysteria/hysteria2）、整份 base64 包裹的 URI/YAML；导入保留可解析节点，订阅渲染只输出支持 UDP 的代理节点。
+- 导入格式：Clash/Mihomo YAML、URI 行订阅（ss/vmess/trojan/vless/hysteria/hysteria2）、整份
+  base64 包裹的 URI/YAML；每次成功导入是该订阅的完整节点快照，保留上游原序并移除已消失节点；
+  导入失败则保留旧快照。订阅渲染只输出支持 UDP 的代理节点。
 - `GET /api/nodes`（不含凭据）
 
 **标签 / 分组**（节点 → 地区组）
@@ -38,6 +46,8 @@ uvicorn --factory service.app:make_app   # DB 路径用 CONDUIT_DB，默认 cond
 
 **订阅产物**（给 clash-verge/mihomo 导入）
 - `GET /sub/clash?token=&full=`：`pure` = proxies + 地区分组 + 规则；`full=1` 再加 fake-ip dns + tun（IPv6 接管 + default-nameserver，见根 [CONSTRAINTS.md](../CONSTRAINTS.md) 「full 模式必须项」）
+- 导出节点名为 `[订阅名] 原节点名`。每个地区 `fallback` 的成员顺序为“订阅优先级 →
+  上游原序”；默认 `AUTO-FAST` 仍跨全部节点按延迟选优。拖动后服务端产物立即变化，客户端刷新订阅后生效。
 - `GET /api/sub-token`（+ 页面显示可复制 URL）；token 保护节点凭据，DB `--no-access-log`
 
 **部署侧 mesh DNS 输入**（非 secret，不进 DB）：如调用方有私有 mesh / MagicDNS，可设
@@ -45,7 +55,10 @@ uvicorn --factory service.app:make_app   # DB 路径用 CONDUIT_DB，默认 cond
 `CONDUIT_MESH_DNS_SERVER=100.100.100.100`。这些值会运行时合入 policy：生成 DIRECT 规则、
 fake-ip 放行和 `nameserver-policy`，包括已有自定义 policy 的场景。conduit 不内置具体 tailnet 名。
 
-存储：`service/db.py`（SQLite）：`subscriptions(source_type=file|url)/imports/nodes` + `meta`（key=`policy` 存自定义策略 JSON）+ 节点标签。⚠️ 含明文凭据 = secret 载体，别对公网暴露、别进 git。
+存储：`service/db.py`（SQLite）：`subscriptions(position, source_type=file|url)` / `imports` /
+`nodes(sub_id, position)` + `meta`（key=`policy` 存自定义策略 JSON）+ 节点标签。旧库升级时按创建时间
+初始化订阅优先级，并尽量从最近一次 `imports.raw` 重建节点原序。⚠️ 含明文凭据 = secret 载体，
+别对公网暴露、别进 git。
 
 ⚠️ **暂无认证** —— 只在 `127.0.0.1` / tailnet（Tailscale ACL）下可接受，**别裸绑 0.0.0.0**（认证归 later）。
 

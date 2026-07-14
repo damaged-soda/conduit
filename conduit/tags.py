@@ -8,6 +8,10 @@ from __future__ import annotations
 
 UNKNOWN = "未分类"
 
+# 地区组展示顺序独立于订阅优先级；其余动态地区排在后面并按名称排序。
+REGION_ORDER = ("HK", "TW", "JP", "SG", "US", "KR", "GB", "DE", "FR", "NL", "CA", "AU")
+_REGION_RANK = {region: index for index, region in enumerate(REGION_ORDER)}
+
 # 旗帜 emoji = 两个区域指示符（U+1F1E6..U+1F1FF），分别映射 A..Z。🇭🇰 → "HK"。
 _RI_LO, _RI_HI = 0x1F1E6, 0x1F1FF
 
@@ -63,6 +67,11 @@ def normalize_region(value: str | None) -> str | None:
     if norm.upper() in _RESERVED_GROUPS:
         raise ValueError(f"region 不能用保留名：{norm}")
     return norm
+
+
+def region_sort_key(region: str) -> tuple[int, str]:
+    """常驻地区按固定顺序，其他地区按名称稳定排序。"""
+    return (_REGION_RANK.get(region, len(REGION_ORDER)), region)
 
 
 def region_of(name: str) -> str:

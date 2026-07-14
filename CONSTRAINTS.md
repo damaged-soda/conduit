@@ -33,6 +33,8 @@ full（带 dns+tun）的配置除上面三处外，还有三条不变量，缺�
 
 ## 可用性目标
 - SLO 写清楚，别含糊：**新连接在节点被探测判定不健康后数秒内绕开**；**已建立的连接不迁移，由应用层重试**（mihomo 不会把在途连接搬到别的节点）。不承诺字面 < 1s、不承诺无感。
+- 地区 `fallback` 的成员顺序必须可复现：先按订阅显式优先级，再按该订阅最近一次完整快照的上游原序；
+  调整订阅优先级不得顺带改变地区组入口的显示顺序。延迟优选只属于 `AUTO-FAST`，不混淆这两种语义。
 - 落地参数：`fallback` 组 + `health-check` 的 `interval` / `timeout` / `lazy: false` / `expected-status` / `max-failed-times` 调到位；并定义**整组全挂时**的兜底行为。
 - ⚠️ mihomo 的 group health-check **只检查直接写在 `proxies:` 的节点，不检查通过 `use: [provider]` 引入的 provider 节点** —— 这条决定上面「输出形态」的选择（见 ARCHITECTURE）。
 - 长期不健康的节点从生成配置里**剔除**（依据见 ARCHITECTURE 健康回路）。

@@ -27,7 +27,7 @@ from pydantic import BaseModel
 from conduit.ingest import normalize
 from conduit.policy import DEFAULT_POLICY, GEOIP_CATALOG, GEOSITE_CATALOG
 from conduit.render import render_subscription, subscription_rules
-from conduit.tags import normalize_region, region_of
+from conduit.tags import normalize_region, region_of, region_sort_key
 from conduit.udp import node_supports_udp
 
 from .db import Store
@@ -44,6 +44,10 @@ class SubIn(BaseModel):
 class SubPatch(BaseModel):
     name: str | None = None
     url: str | None = None
+
+
+class SubOrderIn(BaseModel):
+    ids: list[str]
 
 
 class ImportIn(BaseModel):
@@ -228,6 +232,14 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
     def list_subscriptions():
         return store.list_subscriptions()
 
+    @app.put("/api/subscriptions/order")
+    def reorder_subscriptions(body: SubOrderIn):
+        try:
+            store.reorder_subscriptions(body.ids)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return {"ok": True}
+
     @app.get("/api/subscriptions/{sub_id}")
     def get_subscription(sub_id: str):
         sub = _require(sub_id)
@@ -328,7 +340,7 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
             reg = (t.get("region") or "").strip() or region_of(n.raw_name)
             if reg not in regions:
                 regions.append(reg)
-        return ["DIRECT", "REJECT", "PROXY", "AUTO", *sorted(regions)]
+        return ["DIRECT", "REJECT", "PROXY", "AUTO", *sorted(regions, key=region_sort_key)]
 
     @app.get("/api/policy")
     def get_policy():
@@ -404,8 +416,15 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
         # 订阅产物含明文节点凭据 → 必须 token（常量时间比较）。私网/tailnet 直连兜底在 render 内置。
         if not secrets.compare_digest(token, store.get_sub_token()):
             raise HTTPException(403, "bad token")
+        subscriptions = store.list_subscriptions()
+        source_names = {sub["id"]: sub["name"] for sub in subscriptions}
         cfg = render_subscription(
-            store.nodes_for_render(), {}, full=full, tags=store.get_node_tags(), policy=_policy()
+            store.nodes_for_render(),
+            {},
+            full=full,
+            tags=store.get_node_tags(),
+            policy=_policy(),
+            source_names=source_names,
         )
         # 标准订阅响应头：让 clash-verge/mihomo 当订阅文件处理（否则浏览器直接显示、客户端导入失败）。
         return Response(
@@ -436,8 +455,13 @@ body{font-family:system-ui,sans-serif;max-width:1000px;margin:1.5rem auto;paddin
 .left{width:260px;flex:none}
 .right{flex:1;min-width:0}
 ul{list-style:none;padding:0;margin:.5rem 0}
-li{padding:6px 8px;border:1px solid #ddd;border-radius:6px;margin:4px 0;cursor:pointer}
+li{display:flex;align-items:center;gap:7px;padding:6px 8px;border:1px solid #ddd;border-radius:6px;margin:4px 0;cursor:pointer}
 li.sel{background:#eef;border-color:#88a}
+li.dragging{opacity:.55;border-style:dashed}
+.sub-handle{cursor:grab;touch-action:none;user-select:none;padding:2px;color:#667;font-size:16px;line-height:1}
+.sub-handle:active{cursor:grabbing}.sub-handle[aria-disabled=true]{cursor:wait;opacity:.45}
+.sub-info{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.order-error{color:#b42318}
 table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:3px 7px;font-size:12px;text-align:left}
 input,button,select,textarea{padding:5px;margin:2px 0;font-size:13px}
 input[type=text]{width:100%;box-sizing:border-box}
@@ -460,13 +484,16 @@ summary{cursor:pointer;font-weight:600;font-size:13px;padding:5px 8px;user-selec
 <div class="wrap">
   <div class="left">
     <button onclick="newSub()">＋ 新建订阅</button>
+    <div class="muted" style="margin-top:7px">越靠上优先级越高；拖动 ⠿ 排序</div>
     <ul id="subs"></ul>
+    <div id="order-msg" class="muted" aria-live="polite"></div>
   </div>
   <div class="right" id="detail"><p class="muted">左边选一条订阅，或点「新建订阅」。</p></div>
 </div>
 <script>
 // 全部数据走 textContent / DOM，避免订阅来的 raw_name 等造成 XSS
 let SUBS=[], SEL=null, NOPEN=new Set(), MANUAL_MODE={};  // 记住展开地区 + 手动导入子模式
+let ORDER_BUSY=false, ORDER_DRAG=null, ORDER_ORIGINAL=[], ORDER_MOVED=false, SUPPRESS_SUB_CLICK=0;
 function el(t,x){const e=document.createElement(t);if(x!=null)e.textContent=x;return e}
 function input(ph,val){const e=document.createElement('input');e.type='text';e.placeholder=ph||'';if(val!=null)e.value=val;return e}
 function btn(label,fn){const b=el('button',label);b.onclick=fn;return b}
@@ -495,14 +522,102 @@ function jpost(u,body){return j(u,{method:'POST',headers:{'content-type':'applic
 
 async function loadSubs(){
   SUBS=await j('/api/subscriptions');
+  renderSubs();
+}
+function setOrderMsg(text,bad=false){
+  const out=document.getElementById('order-msg');out.textContent=text||'';out.className=bad?'muted order-error':'muted';
+}
+function renderSubs(focusId=null){
   const ul=document.getElementById('subs');
   ul.replaceChildren(...SUBS.map(s=>{
     const src=s.source_type==='url'?'链接':'手动';
-    const li=el('li',`${s.name||'(未命名)'} · ${src} · ${s.node_count}`);
+    const li=document.createElement('li');li.dataset.subId=s.id;
     if(s.id===SEL)li.className='sel';
-    li.onclick=()=>select(s.id);
+    const handle=el('span','⠿');handle.className='sub-handle';handle.tabIndex=ORDER_BUSY?-1:0;
+    handle.draggable=!ORDER_BUSY;handle.setAttribute('role','button');
+    handle.setAttribute('aria-disabled',ORDER_BUSY?'true':'false');
+    handle.setAttribute('aria-label',`调整 ${s.name||'未命名订阅'} 的优先级；方向键上移或下移`);
+    handle.title='拖动排序；聚焦后按 ↑ / ↓ 移动';
+    handle.onclick=e=>e.stopPropagation();
+    handle.ondragstart=e=>{
+      if(!beginSubDrag(s.id)){e.preventDefault();return}
+      e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',s.id);
+    };
+    handle.ondragend=()=>{if(ORDER_DRAG===s.id)finishSubDrag(s.id)};
+    handle.onpointerdown=e=>{
+      if(e.pointerType==='mouse'||!beginSubDrag(s.id))return;
+      handle.setPointerCapture(e.pointerId);e.preventDefault();
+    };
+    handle.onpointermove=e=>{
+      if(e.pointerType==='mouse'||ORDER_DRAG!==s.id)return;
+      const hit=document.elementFromPoint(e.clientX,e.clientY);
+      const target=hit&&hit.closest('#subs > li');
+      if(target)placeDraggedSub(target,e.clientY);
+      e.preventDefault();
+    };
+    handle.onpointerup=e=>{
+      if(e.pointerType!=='mouse'&&ORDER_DRAG===s.id){
+        if(handle.hasPointerCapture(e.pointerId))handle.releasePointerCapture(e.pointerId);
+        finishSubDrag(s.id);e.preventDefault();
+      }
+    };
+    handle.onpointercancel=e=>{
+      if(e.pointerType!=='mouse'&&ORDER_DRAG===s.id)cancelSubDrag();
+    };
+    handle.onkeydown=e=>{
+      if(e.key!=='ArrowUp'&&e.key!=='ArrowDown')return;
+      e.preventDefault();e.stopPropagation();moveSubByKeyboard(s.id,e.key==='ArrowUp'?-1:1);
+    };
+    li.ondragover=e=>{if(ORDER_DRAG){e.preventDefault();placeDraggedSub(li,e.clientY)}};
+    li.onclick=()=>{if(!ORDER_BUSY&&Date.now()>SUPPRESS_SUB_CLICK)select(s.id)};
+    const info=el('span',`${s.name||'(未命名)'} · ${src} · ${s.node_count}`);info.className='sub-info';
+    li.append(handle,info);
     return li;
   }));
+  if(focusId){const h=ul.querySelector(`li[data-sub-id="${focusId}"] .sub-handle`);if(h)h.focus()}
+}
+function beginSubDrag(id){
+  if(ORDER_BUSY||ORDER_DRAG)return false;
+  ORDER_DRAG=id;ORDER_ORIGINAL=SUBS.slice();ORDER_MOVED=false;
+  const li=document.querySelector(`#subs > li[data-sub-id="${id}"]`);if(li)li.classList.add('dragging');
+  return true;
+}
+function placeDraggedSub(target,clientY){
+  const dragged=document.querySelector(`#subs > li[data-sub-id="${ORDER_DRAG}"]`);
+  if(!dragged||dragged===target)return;
+  const rect=target.getBoundingClientRect();
+  target.parentNode.insertBefore(dragged,clientY>rect.top+rect.height/2?target.nextSibling:target);
+  ORDER_MOVED=true;
+}
+function finishSubDrag(focusId){
+  const ids=[...document.querySelectorAll('#subs > li')].map(li=>li.dataset.subId);
+  const original=ORDER_ORIGINAL;const moved=ORDER_MOVED;
+  ORDER_DRAG=null;ORDER_ORIGINAL=[];ORDER_MOVED=false;
+  if(!moved){renderSubs(focusId);return}
+  SUPPRESS_SUB_CLICK=Date.now()+350;
+  const byId=new Map(SUBS.map(s=>[s.id,s]));SUBS=ids.map(id=>byId.get(id));
+  persistSubOrder(original,focusId);
+}
+function cancelSubDrag(){
+  ORDER_DRAG=null;ORDER_MOVED=false;SUBS=ORDER_ORIGINAL;ORDER_ORIGINAL=[];renderSubs();
+}
+function moveSubByKeyboard(id,delta){
+  if(ORDER_BUSY)return;
+  const index=SUBS.findIndex(s=>s.id===id),next=index+delta;
+  if(index<0||next<0||next>=SUBS.length)return;
+  const original=SUBS.slice();SUBS=SUBS.slice();[SUBS[index],SUBS[next]]=[SUBS[next],SUBS[index]];
+  persistSubOrder(original,id);
+}
+async function persistSubOrder(original,focusId){
+  ORDER_BUSY=true;renderSubs();setOrderMsg('正在保存顺序…');
+  try{
+    await j('/api/subscriptions/order',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({ids:SUBS.map(s=>s.id)})});
+    SUBS=await j('/api/subscriptions');setOrderMsg('顺序已保存；客户端刷新订阅后生效');
+  }catch(e){
+    SUBS=original;setOrderMsg('保存失败，已恢复原顺序：'+e.message,true);
+  }finally{
+    ORDER_BUSY=false;renderSubs(focusId);
+  }
 }
 function setMsg(t){const m=document.getElementById('msg');if(m)m.textContent=t||''}
 function fmtTime(t){try{return new Intl.DateTimeFormat('zh-CN',{dateStyle:'medium',timeStyle:'medium'}).format(new Date(t))}catch(e){return t}}
