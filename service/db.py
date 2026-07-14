@@ -2,9 +2,10 @@
 
 三张表：
 - subscriptions：**id 内部不透明 key（自动生成，稳定，节点按它归属）**；name 是可随意改的显示名；
-  type / note / source_type(file|url) / url（含 token = secret，API 不返回；file 来源无 url）。
+  position 是导出优先级（越小越优先）；type / note / source_type(file|url) / url（含 token = secret，
+  API 不返回；file 来源无 url）。
 - imports：每次导入的原始内容（含凭据）+ 来源类型 + 节点数 + 时间。
-- nodes：节点池，按 access_id 去重，sub_id 指向 subscriptions.id（稳定，改名不影响）。
+- nodes：每条订阅的当前节点快照；position 保留上游原序。相同 access_id 可在不同订阅分别存在。
 
 ⚠️ nodes/imports/subscriptions.url 含明文凭据 → 这个 DB 是 secret 载体：访问控制、别对公网暴露、别进 git。
 TODO：health / traffic；连接并发；凭据加密；定时刷新。
@@ -18,12 +19,30 @@ import sqlite3
 import threading
 
 from conduit.identity import access_id as compute_access_id
+from conduit.ingest import normalize
 from conduit.models import AccessId, EndpointId, Node
+
+_NODES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS nodes (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  access_id  TEXT NOT NULL,
+  sub_id     TEXT,
+  position   INTEGER NOT NULL DEFAULT 0,
+  type       TEXT NOT NULL,
+  server     TEXT NOT NULL,
+  port       INTEGER NOT NULL,
+  raw_name   TEXT NOT NULL DEFAULT '',
+  params     TEXT NOT NULL DEFAULT '{}',
+  first_seen TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS subscriptions (
   id         TEXT PRIMARY KEY,                       -- 内部不透明 key（节点按它归属，稳定）
   name       TEXT NOT NULL DEFAULT '',               -- 显示名（用户可随意改）
+  position   INTEGER NOT NULL DEFAULT 0,              -- 越小导出优先级越高
   type       TEXT NOT NULL DEFAULT 'auto',
   note       TEXT NOT NULL DEFAULT '',
   source_type TEXT NOT NULL DEFAULT 'file' CHECK (source_type IN ('file', 'url')),
@@ -42,17 +61,7 @@ CREATE TABLE IF NOT EXISTS imports (
   node_count INTEGER NOT NULL,
   at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE TABLE IF NOT EXISTS nodes (
-  access_id  TEXT PRIMARY KEY,
-  sub_id     TEXT,
-  type       TEXT NOT NULL,
-  server     TEXT NOT NULL,
-  port       INTEGER NOT NULL,
-  raw_name   TEXT NOT NULL DEFAULT '',
-  params     TEXT NOT NULL DEFAULT '{}',
-  first_seen TEXT NOT NULL DEFAULT (datetime('now')),
-  last_seen  TEXT NOT NULL DEFAULT (datetime('now'))
-);
+""" + _NODES_TABLE_SQL + """
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -97,6 +106,15 @@ class Store:
             self._conn.execute("UPDATE subscriptions SET name = id WHERE name = ''")  # 旧行回填 name=id
         if "source_type" not in cols:
             self._conn.execute("ALTER TABLE subscriptions ADD COLUMN source_type TEXT NOT NULL DEFAULT 'file'")
+        if "position" not in cols:
+            self._conn.execute("ALTER TABLE subscriptions ADD COLUMN position INTEGER NOT NULL DEFAULT 0")
+            rows = self._conn.execute(
+                "SELECT id FROM subscriptions ORDER BY created_at, rowid"
+            ).fetchall()
+            for position, row in enumerate(rows):
+                self._conn.execute(
+                    "UPDATE subscriptions SET position = ? WHERE id = ?", (position, row["id"])
+                )
         self._conn.execute(
             "UPDATE subscriptions SET source_type = "
             "CASE WHEN url IS NOT NULL AND url != '' THEN 'url' ELSE 'file' END "
@@ -106,8 +124,132 @@ class Store:
         import_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(imports)").fetchall()}
         if "source_type" not in import_cols:
             self._conn.execute("ALTER TABLE imports ADD COLUMN source_type TEXT NOT NULL DEFAULT 'file'")
+        node_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(nodes)").fetchall()}
+        if "id" not in node_cols or "position" not in node_cols:
+            self._upgrade_nodes_table_locked()
         self._migrate_access_ids_locked()
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_nodes_sub_position ON nodes(sub_id, position, id)"
+        )
         self._conn.commit()
+
+    @staticmethod
+    def _stable_id_for_row(row: sqlite3.Row | dict) -> str:
+        try:
+            params = json.loads(row["params"])
+            return compute_access_id(
+                {"type": row["type"], "server": row["server"], "port": row["port"], **params}
+            ).value
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return row["access_id"]
+
+    def _upgrade_nodes_table_locked(self) -> None:
+        """把旧的全局去重节点池升级为 per-subscription 有序快照。
+
+        最近一次 imports.raw 是最可靠的原序来源；解析不了或没有历史时，才按旧表顺序兜底。
+        """
+        legacy = [
+            dict(r)
+            for r in self._conn.execute(
+                "SELECT rowid AS legacy_rowid, access_id, sub_id, type, server, port, raw_name, "
+                "params, first_seen, last_seen FROM nodes ORDER BY rowid"
+            ).fetchall()
+        ]
+        for row in legacy:
+            self._merge_node_tag_locked(row["access_id"], self._stable_id_for_row(row))
+
+        self._conn.execute("ALTER TABLE nodes RENAME TO nodes_legacy")
+        self._conn.execute(_NODES_TABLE_SQL)
+
+        timestamps: dict[tuple[str | None, str], tuple[str, str]] = {}
+        for row in legacy:
+            key = (row["sub_id"], self._stable_id_for_row(row))
+            seen = timestamps.get(key)
+            first = row["first_seen"] if not seen else min(seen[0], row["first_seen"])
+            last = row["last_seen"] if not seen else max(seen[1], row["last_seen"])
+            timestamps[key] = (first, last)
+
+        reconstructed: set[str] = set()
+        subs = self._conn.execute("SELECT id, type FROM subscriptions").fetchall()
+        for sub in subs:
+            latest = self._conn.execute(
+                "SELECT raw FROM imports WHERE sub_id = ? ORDER BY id DESC LIMIT 1", (sub["id"],)
+            ).fetchone()
+            if not latest:
+                continue
+            try:
+                snapshot = normalize(latest["raw"], sub["type"], sub["id"])
+            except Exception:  # 迁移必须 best-effort；坏历史不能阻止服务启动
+                continue
+            reconstructed.add(sub["id"])
+            for position, node in enumerate(snapshot):
+                first, last = timestamps.get(
+                    (sub["id"], node.access_id.value),
+                    ("", ""),
+                )
+                self._insert_migrated_node_locked(sub["id"], position, node, first, last)
+
+        # 没有可用 imports 快照的订阅，按旧表 rowid 兜底。仅合并身份算法升级造成的碰撞；
+        # 不同订阅中的相同 access_id 仍各自保留。
+        fallback: dict[tuple[str | None, str], dict] = {}
+        for row in legacy:
+            if row["sub_id"] in reconstructed:
+                continue
+            stable_id = self._stable_id_for_row(row)
+            key = (row["sub_id"], stable_id)
+            current = fallback.get(key)
+            if current is None or row["last_seen"] >= current["last_seen"]:
+                chosen = dict(row)
+                chosen["access_id"] = stable_id
+                if current:
+                    chosen["first_seen"] = min(current["first_seen"], row["first_seen"])
+                fallback[key] = chosen
+            elif row["first_seen"] < current["first_seen"]:
+                current["first_seen"] = row["first_seen"]
+
+        per_sub_position: dict[str | None, int] = {}
+        for row in sorted(fallback.values(), key=lambda item: item["legacy_rowid"]):
+            sub_id = row["sub_id"]
+            position = per_sub_position.get(sub_id, 0)
+            per_sub_position[sub_id] = position + 1
+            ep = EndpointId(type=row["type"], server=row["server"], port=row["port"])
+            try:
+                params = json.loads(row["params"])
+            except (TypeError, json.JSONDecodeError):
+                params = {}
+            node = Node(
+                access_id=AccessId(value=row["access_id"], endpoint=ep),
+                raw_name=row["raw_name"],
+                params=params,
+                source=sub_id or "",
+            )
+            self._insert_migrated_node_locked(
+                sub_id, position, node, row["first_seen"], row["last_seen"]
+            )
+
+        self._conn.execute("DROP TABLE nodes_legacy")
+
+    def _insert_migrated_node_locked(
+        self, sub_id: str | None, position: int, node: Node, first_seen: str, last_seen: str
+    ) -> None:
+        ep = node.access_id.endpoint
+        self._conn.execute(
+            "INSERT INTO nodes(access_id, sub_id, position, type, server, port, raw_name, params, "
+            "first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, "
+            "COALESCE(NULLIF(?, ''), datetime('now')), COALESCE(NULLIF(?, ''), datetime('now')))",
+            (
+                node.access_id.value,
+                sub_id,
+                position,
+                ep.type,
+                ep.server,
+                ep.port,
+                node.raw_name,
+                json.dumps(node.params, ensure_ascii=False),
+                first_seen,
+                last_seen,
+            ),
+        )
 
     def _merge_node_tag_locked(self, old_id: str, new_id: str) -> None:
         if old_id == new_id:
@@ -132,48 +274,77 @@ class Store:
             self._conn.execute("UPDATE node_tags SET access_id = ? WHERE access_id = ?", (new_id, old_id))
 
     def _migrate_access_ids_locked(self) -> None:
-        """Recompute IDs after identity-only metadata keys change, preserving node tags."""
+        """Recompute IDs after identity-only metadata keys change, preserving node tags and memberships."""
         rows = self._conn.execute(
-            "SELECT access_id, sub_id, type, server, port, raw_name, params, first_seen, last_seen FROM nodes"
+            "SELECT id FROM nodes ORDER BY id"
         ).fetchall()
         for r in rows:
-            old_id = r["access_id"]
-            params = json.loads(r["params"])
+            current = self._conn.execute(
+                "SELECT id, access_id, sub_id, position, type, server, port, raw_name, params, "
+                "first_seen, last_seen FROM nodes WHERE id = ?", (r["id"],)
+            ).fetchone()
+            if not current:  # 前一个碰撞已把它合并掉
+                continue
+            old_id = current["access_id"]
+            params = json.loads(current["params"])
             new_id = compute_access_id(
-                {"type": r["type"], "server": r["server"], "port": r["port"], **params}
+                {
+                    "type": current["type"],
+                    "server": current["server"],
+                    "port": current["port"],
+                    **params,
+                }
             ).value
             if new_id == old_id:
                 continue
             target = self._conn.execute(
-                "SELECT access_id FROM nodes WHERE access_id = ?", (new_id,)
+                "SELECT id, first_seen, last_seen FROM nodes "
+                "WHERE sub_id IS ? AND access_id = ? AND id != ? ORDER BY id LIMIT 1",
+                (current["sub_id"], new_id, current["id"]),
             ).fetchone()
             if target:
                 self._conn.execute(
-                    "UPDATE nodes SET sub_id = ?, type = ?, server = ?, port = ?, raw_name = ?, "
-                    "params = ?, first_seen = min(first_seen, ?), last_seen = max(last_seen, ?) "
-                    "WHERE access_id = ?",
+                    "UPDATE nodes SET type = ?, server = ?, port = ?, raw_name = ?, params = ?, "
+                    "position = min(position, ?), first_seen = min(first_seen, ?), "
+                    "last_seen = max(last_seen, ?) WHERE id = ?",
                     (
-                        r["sub_id"], r["type"], r["server"], r["port"], r["raw_name"], r["params"],
-                        r["first_seen"], r["last_seen"], new_id,
+                        current["type"], current["server"], current["port"], current["raw_name"],
+                        current["params"], current["position"], current["first_seen"],
+                        current["last_seen"], target["id"],
                     ),
                 )
                 self._merge_node_tag_locked(old_id, new_id)
-                self._conn.execute("DELETE FROM nodes WHERE access_id = ?", (old_id,))
+                self._conn.execute("DELETE FROM nodes WHERE id = ?", (current["id"],))
             else:
-                self._conn.execute("UPDATE nodes SET access_id = ? WHERE access_id = ?", (new_id, old_id))
+                self._conn.execute(
+                    "UPDATE nodes SET access_id = ? WHERE id = ?", (new_id, current["id"])
+                )
                 self._merge_node_tag_locked(old_id, new_id)
+
+        sub_ids = self._conn.execute("SELECT DISTINCT sub_id FROM nodes").fetchall()
+        for sub in sub_ids:
+            members = self._conn.execute(
+                "SELECT id FROM nodes WHERE sub_id IS ? ORDER BY position, id", (sub["sub_id"],)
+            ).fetchall()
+            for position, member in enumerate(members):
+                self._conn.execute(
+                    "UPDATE nodes SET position = ? WHERE id = ?", (position, member["id"])
+                )
 
     # ---- subscriptions ----
 
     def add_subscription(self, name: str, type: str = "auto", note: str = "", url: str | None = None) -> str:
-        """新建订阅，返回自动生成的内部 id。"""
+        """新建最低优先级订阅，返回自动生成的内部 id。"""
         sub_id = secrets.token_hex(8)
         clean_url = (url or "").strip() or None
         source_type = _source_type_for_url(clean_url)
         with self._lock:
+            row = self._conn.execute("SELECT max(position) AS p FROM subscriptions").fetchone()
+            position = (row["p"] + 1) if row and row["p"] is not None else 0
             self._conn.execute(
-                "INSERT INTO subscriptions(id, name, type, note, source_type, url) VALUES (?, ?, ?, ?, ?, ?)",
-                (sub_id, name, type, note, source_type, clean_url),
+                "INSERT INTO subscriptions(id, name, position, type, note, source_type, url) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (sub_id, name, position, type, note, source_type, clean_url),
             )
             self._conn.commit()
         return sub_id
@@ -188,12 +359,33 @@ class Store:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT s.id, s.name, s.type, s.created_at, "
-                "s.source_type, "
+                "s.position, s.source_type, "
                 "(s.url IS NOT NULL AND s.url != '') AS has_url, "
                 "(SELECT COUNT(*) FROM nodes n WHERE n.sub_id = s.id) AS node_count "
-                "FROM subscriptions s ORDER BY s.created_at"
+                "FROM subscriptions s ORDER BY s.position, s.created_at, s.id"
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def reorder_subscriptions(self, sub_ids: list[str]) -> None:
+        """用完整 id 列表原子替换优先级；拒绝缺失、重复或未知 id。"""
+        with self._lock:
+            current = [
+                r["id"]
+                for r in self._conn.execute(
+                    "SELECT id FROM subscriptions ORDER BY position, created_at, id"
+                ).fetchall()
+            ]
+            if len(sub_ids) != len(set(sub_ids)) or set(sub_ids) != set(current):
+                raise ValueError("订阅顺序必须包含全部且不重复的 subscription id")
+            try:
+                for position, sub_id in enumerate(sub_ids):
+                    self._conn.execute(
+                        "UPDATE subscriptions SET position = ? WHERE id = ?", (position, sub_id)
+                    )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def update_subscription(self, sub_id: str, name=_UNSET, url=_UNSET) -> None:
         """改名 / 改 URL（只更新提供的字段；URL 可清空为 NULL；改名不动节点）。
@@ -221,11 +413,7 @@ class Store:
     # ---- nodes ----
 
     def import_nodes(self, sub_id: str, raw: str, nodes: list[Node], source_type: str = "file") -> int:
-        """记录一次导入，并按 access_id upsert 节点。返回本次节点数。
-
-        节点是**全局池**（access_id 唯一）；同一 access_id 跨订阅出现时，`sub_id` 归**最后导入的那条**
-        （「全局池，后导入者赢」）。真·多订阅归属 = later（需要成员表）。
-        """
+        """记录一次导入，并用上游原序原子替换该订阅的完整节点快照。"""
         source_type = _check_source_type(source_type)
         with self._lock:
             try:
@@ -233,15 +421,32 @@ class Store:
                     "INSERT INTO imports(sub_id, raw, source_type, node_count) VALUES (?, ?, ?, ?)",
                     (sub_id, raw, source_type, len(nodes)),
                 )
-                for n in nodes:
+                first_seen = {
+                    r["access_id"]: r["first_seen"]
+                    for r in self._conn.execute(
+                        "SELECT access_id, min(first_seen) AS first_seen FROM nodes "
+                        "WHERE sub_id = ? GROUP BY access_id",
+                        (sub_id,),
+                    ).fetchall()
+                }
+                self._conn.execute("DELETE FROM nodes WHERE sub_id = ?", (sub_id,))
+                for position, n in enumerate(nodes):
                     ep = n.access_id.endpoint
                     self._conn.execute(
-                        "INSERT INTO nodes(access_id, sub_id, type, server, port, raw_name, params) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?) "
-                        "ON CONFLICT(access_id) DO UPDATE SET sub_id=excluded.sub_id, raw_name=excluded.raw_name, "
-                        "params=excluded.params, last_seen=datetime('now')",
-                        (n.access_id.value, sub_id, ep.type, ep.server, ep.port, n.raw_name,
-                         json.dumps(n.params, ensure_ascii=False)),
+                        "INSERT INTO nodes(access_id, sub_id, position, type, server, port, raw_name, "
+                        "params, first_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, "
+                        "COALESCE(?, datetime('now')))",
+                        (
+                            n.access_id.value,
+                            sub_id,
+                            position,
+                            ep.type,
+                            ep.server,
+                            ep.port,
+                            n.raw_name,
+                            json.dumps(n.params, ensure_ascii=False),
+                            first_seen.get(n.access_id.value),
+                        ),
                     )
                 self._conn.commit()
             except Exception:
@@ -251,12 +456,20 @@ class Store:
 
     def list_nodes(self, sub_id: str | None = None) -> list[dict]:
         """列节点（**不含 params**，避免泄露凭据）；给 sub_id 则只列该订阅的。"""
-        q = ("SELECT access_id, sub_id, type, server, port, raw_name, first_seen, last_seen FROM nodes")
+        q = (
+            "SELECT n.access_id, n.sub_id, n.position, n.type, n.server, n.port, n.raw_name, "
+            "n.first_seen, n.last_seen FROM nodes n "
+        )
         args: tuple = ()
         if sub_id is not None:
-            q += " WHERE sub_id = ?"
+            q += "WHERE n.sub_id = ? "
             args = (sub_id,)
-        q += " ORDER BY type, server, port"
+            q += "ORDER BY n.position, n.id"
+        else:
+            q += (
+                "LEFT JOIN subscriptions s ON s.id = n.sub_id "
+                "ORDER BY COALESCE(s.position, 2147483647), n.position, n.id"
+            )
         with self._lock:
             rows = self._conn.execute(q, args).fetchall()
         return [dict(r) for r in rows]
@@ -295,11 +508,19 @@ class Store:
 
     def nodes_for_render(self, sub_id: str | None = None) -> list[Node]:
         """取节点并重建成 Node（**含 params 凭据**，仅服务内部渲染订阅用，绝不经 API 暴露）。"""
-        q = "SELECT access_id, sub_id, type, server, port, raw_name, params FROM nodes"
+        q = (
+            "SELECT n.access_id, n.sub_id, n.position, n.type, n.server, n.port, n.raw_name, "
+            "n.params FROM nodes n "
+        )
         args: tuple = ()
         if sub_id is not None:
-            q += " WHERE sub_id = ?"
+            q += "WHERE n.sub_id = ? ORDER BY n.position, n.id"
             args = (sub_id,)
+        else:
+            q += (
+                "LEFT JOIN subscriptions s ON s.id = n.sub_id "
+                "ORDER BY COALESCE(s.position, 2147483647), n.position, n.id"
+            )
         with self._lock:
             rows = self._conn.execute(q, args).fetchall()
         out: list[Node] = []

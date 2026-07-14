@@ -24,7 +24,7 @@ import yaml
 
 from .models import Node
 from .policy import DEFAULT_POLICY, policy_rules, rule_providers_block
-from .tags import region_of
+from .tags import region_of, region_sort_key
 from .udp import node_supports_udp
 
 _HEALTH_URL = "http://www.gstatic.com/generate_204"
@@ -45,16 +45,27 @@ def _short(aid_value: str) -> str:
     return hashlib.sha1(aid_value.encode()).hexdigest()[:6]
 
 
-def _assign_names(nodes: list[Node], extra_reserved: set[str] = frozenset()) -> list[str]:
+def _assign_names(
+    nodes: list[Node],
+    extra_reserved: set[str] = frozenset(),
+    source_names: dict[str, str] | None = None,
+) -> list[str]:
     """给每个节点一个去重、且不撞保留名/group 名的 proxy 名。v1 用 raw_name(+access_id 短哈希)。
 
     extra_reserved：额外要避开的名字（如动态生成的地区组名 / AUTO），防 proxy 名撞组名。
+    source_names：服务端传入的 subscription id → 显示名；提供时导出 `[订阅名] 原节点名`。
     """
     reserved = _RESERVED_NAMES | set(extra_reserved)
     used: set[str] = set()
     out: list[str] = []
     for n in nodes:
-        base = n.raw_name or "node"
+        raw_name = n.raw_name or "node"
+        if source_names is None:
+            base = raw_name
+        else:
+            source_name = (source_names.get(n.source) or "").strip()
+            source_name = source_name or f"未命名-{_short(n.source or 'unknown')}"
+            base = f"[{source_name}] {raw_name}"
         name = base if base not in used and base not in reserved else f"{base}-{_short(n.access_id.value)}"
         i = 2
         while name in used or name in reserved:
@@ -211,7 +222,12 @@ def render(nodes: list[Node], target: str, direct_list: dict, overlay: dict) -> 
 
 
 def build_subscription(
-    nodes: list[Node], direct: dict, full: bool = False, tags: dict | None = None, policy: dict | None = None
+    nodes: list[Node],
+    direct: dict,
+    full: bool = False,
+    tags: dict | None = None,
+    policy: dict | None = None,
+    source_names: dict[str, str] | None = None,
 ) -> dict:
     """订阅用配置：标准 clash 骨架 + 按 region 分组的 proxy-groups + 规则；`full=True` 再加 dns+tun。
 
@@ -311,13 +327,14 @@ def build_subscription(
         cfg["rules"] = ["MATCH,DIRECT"]
         return cfg
 
-    region_order: list[str] = []  # 按出现顺序，稳定
-    for _, r in active:
-        if r not in region_order:
-            region_order.append(r)
+    region_order = sorted({region for _, region in active}, key=region_sort_key)
 
     nodes_only = [n for n, _ in active]
-    names = _assign_names(nodes_only, extra_reserved={"AUTO", "AUTO-FAST", *region_order})
+    names = _assign_names(
+        nodes_only,
+        extra_reserved={"AUTO", "AUTO-FAST", *region_order},
+        source_names=source_names,
+    )
     cfg["proxies"] = [_node_to_proxy(n, nm) for n, nm in zip(nodes_only, names)]
 
     by_region: dict[str, list[str]] = {}
@@ -356,8 +373,15 @@ def subscription_rules(direct: dict, policy: dict, resolve=None) -> list[str]:
 
 
 def render_subscription(
-    nodes: list[Node], direct_list: dict, full: bool = False, tags: dict | None = None, policy: dict | None = None
+    nodes: list[Node],
+    direct_list: dict,
+    full: bool = False,
+    tags: dict | None = None,
+    policy: dict | None = None,
+    source_names: dict[str, str] | None = None,
 ) -> str:
     return yaml.safe_dump(
-        build_subscription(nodes, direct_list, full, tags, policy), sort_keys=False, allow_unicode=True
+        build_subscription(nodes, direct_list, full, tags, policy, source_names),
+        sort_keys=False,
+        allow_unicode=True,
     )

@@ -5,7 +5,10 @@
 ## 边界：conduit 的输入
 conduit 通过**读外部文件**接收调用方的现状（不硬编码、不反向依赖来源）。约定输入：
 
-- **subscriptions**：结构化来源清单，每条 `id / source_type(file|url) / url|path / type(parser hint)`；`url` 与 `path` 是互斥来源，敏感值用 `*_ref` 指外部 secret，放 `secrets/`；schema 见 `examples/subscriptions.example.yaml`。`headers_ref / fetch_interval / source_trust` 是调用方 schema 预留字段，当前 `conduit-service` 只消费 URL 刷新或手动导入。
+- **subscriptions**：结构化来源清单，每条 `id / position / source_type(file|url) / url|path / type(parser hint)`；
+  `position` 越小导出优先级越高；`url` 与 `path` 是互斥来源，敏感值用 `*_ref` 指外部 secret，
+  放 `secrets/`；schema 见 `examples/subscriptions.example.yaml`。`headers_ref / fetch_interval / source_trust`
+  是调用方 schema 预留字段，当前 `conduit-service` 只消费 URL 刷新或手动导入。
 - **targets 文件**：目标主机清单 + 每台的渲染相关 overlay（TUN + `route_exclude` / 监听 / DNS+fake-ip / controller bind + `controller_secret_ref`…）。用占位名，conduit 不认识具体主机；schema 见 `examples/targets.example.yaml`。送达 / 谁推谁拉不写这里，那不是 conduit 的事。
 - **direct-list 文件**：结构化的必须直连目的地（`domain_exact/suffix/wildcard` + `ip_cidr`）；schema 见 `examples/direct-list.example.yaml`。
 - **rules / tags / policies**：默认策略版本控制在 `conduit/policy.py`；服务内的人工标签和自定义 policy 存 DB。`config/` 目前只保留为后续外置规则源的占位。
@@ -28,7 +31,9 @@ fetch → normalize → tag → prune → render → validate
 ```
 
 1. **fetch**：抓订阅原始内容（多格式：clash yaml / URI 行 / base64 等）。
-2. **normalize**：解析为统一 `Node`，算指纹；跳过残缺记录、拒绝非法端口等无法解析输入，不按 UDP 资格过滤。**丢弃订阅自带的规则系统**。
+2. **normalize**：解析为统一 `Node`，算指纹；跳过残缺记录、拒绝非法端口等无法解析输入，不按 UDP
+   资格过滤。**丢弃订阅自带的规则系统**。每次成功摄入把结果作为该订阅的完整快照，保存上游原序；
+   失败不替换旧快照。
 3. **tag**：auto（正则）+ manual（映射）；未见过的指纹进隔离区。
 4. **prune**：按健康历史剔除长期不健康节点（阈值/时间窗待定）。
 5. **render**：按模板渲染**某个 target** 的 mihomo 配置（inline proxies + 标签 group + 规则 + 注入 direct-list + per-target overlay）；输出前过滤不支持 UDP 的节点。
@@ -59,7 +64,13 @@ mihomo health-check → 指标存储 → 生成器读「过去 N 时长不健康
 - **部署侧 mesh DNS 输入**：调用方可通过 `CONDUIT_MESH_DOMAIN_SUFFIXES` 注入私有 mesh / MagicDNS 后缀；需要专用解析器时用 `CONDUIT_MESH_DNS_SERVER` 生成 `nameserver-policy`。这些运行时合入 policy，不写 DB，不把具体 tailnet 名固化进 conduit。
 
 ## 分组 + 订阅输出（已落地）
-- **地区分组**(`conduit/tags.py`)：`region_of` **文本关键词优先、旗帜 emoji 兜底**(机场常把台湾标 🇨🇳)；render 按 region 分组 = `PROXY`(select:[AUTO,各地区]) + `AUTO`(fallback 外壳：优先隐藏 `AUTO-FAST` url-test, tolerance=200，再用原始节点兜底) + 每地区一个 fallback 组。标签按 access_id 存 DB、跟节点走。
+- **地区分组**(`conduit/tags.py`)：`region_of` **文本关键词优先、旗帜 emoji 兜底**(机场常把台湾标 🇨🇳)；
+  render 按 region 分组 = `PROXY`(select:[AUTO,各地区]) + `AUTO`(fallback 外壳：优先隐藏
+  `AUTO-FAST` url-test, tolerance=200，再用原始节点兜底) + 每地区一个 fallback 组。地区组自身按固定地区序
+  展示；组内节点按“订阅 position → 上游 position”排列，形成确定的 fallback 优先级。`AUTO-FAST`
+  仍跨全部节点按延迟选优。标签按 access_id 存 DB、跟节点走。
+- **节点显示名**：服务输出统一使用 `[订阅名] 原节点名`；订阅改名后下一次渲染立即使用新前缀，
+  撞名再追加稳定短标识。
 - **服务以订阅形态下发**：`conduit-service` 把节点池+分组+规则渲成 clash 订阅 `GET /sub/clash?token=&full=`；`pure` 纯净、`full` 加 fake-ip dns + tun（full 模式必须项见 [CONSTRAINTS.md](CONSTRAINTS.md)）。clash-verge/mihomo 直接订阅，等价 `fetch→tag→render` 流水线的产物。
 - **UDP 资格过滤在 render 期**：导入 / 刷新保留所有可解析节点，`render` 和 `/api/groups` 使用同一套 UDP 资格过滤，旧 DB 里的非 UDP 节点也不会进入订阅输出；`/sub/clash` 每次请求实时渲染，不依赖缓存刷新。
 
