@@ -1,8 +1,8 @@
 """用 render 的**真实产出**生成集成测试用的 mihomo 配置（不是手写配置）。
 
-合成 socks5 节点指向 compose 里的 gost 上游 → build_subscription（纯净版，含 rule#0 兜底直连）→
+合成 socks5 节点指向 compose 里的 gost 上游 → build_subscription（full DNS 产物，TUN 在测试台关闭）→
 补上客户端实例设置（mixed-port/controller/allow-lan，订阅本身不含）→ 写 mihomo.generated.yaml。
-隔离网无公网，健康检查改指本地 echo-health。
+隔离网无公网，DNS 使用容器 system resolver，健康检查改指本地 echo-health。
 """
 
 from __future__ import annotations
@@ -28,10 +28,23 @@ def main() -> None:
     # proxy 名 = compose 服务名，故障切换断言可直接 `compose stop <选中节点>`
     # 无-geo 策略：隔离网无公网，跑不了 geosite/geoip 库。本集成测试只验结构化路由(私网/域名/切换)，
     # 不验 geo 规则（geo 由 golden + mihomo -t 验）。
-    nogeo = {"final": "PROXY"}
+    nogeo = {
+        "final": "PROXY",
+        "dns": {"default_nameserver": ["system"], "nameserver": ["system"]},
+    }
     cfg = build_subscription(
-        [_node("upstream-a", "upstream-a"), _node("upstream-b", "upstream-b")], {}, full=False, policy=nogeo
+        [_node("upstream-a", "upstream-a"), _node("upstream-b", "upstream-b")],
+        {},
+        full=True,
+        policy=nogeo,
+        source_proxy_nameservers={"it": ["system"]},
     )
+    # CI 容器不需要/不允许 TUN；保留 full DNS，实际让 mihomo 用来源 policy 解析两个上游域名。
+    cfg["tun"]["enable"] = False
+    assert cfg["dns"]["proxy-server-nameserver-policy"] == {
+        "upstream-a": ["system"],
+        "upstream-b": ["system"],
+    }
     # 模拟客户端实例设置；放在 base 之后 update，确保覆盖 build_subscription 的骨架默认
     # （尤其 allow-lan: False → True，否则 mihomo 不绑 0.0.0.0、tester 够不到）+ 暴露 controller
     cfg.update({

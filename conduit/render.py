@@ -157,7 +157,8 @@ def _source_dns_policy(
         nameservers = _dedupe(source_proxy_nameservers.get(node.source, []))
         if not nameservers:
             continue
-        server = node.access_id.endpoint.server.strip().lower().rstrip(".")
+        # 必须与 _node_to_proxy 实际输出的 server 完全一致；不要在这里单独做更激进归一。
+        server = node.access_id.endpoint.server
         try:
             ipaddress.ip_address(server.strip("[]"))
             continue  # IP 节点不需要 DNS policy。
@@ -364,7 +365,11 @@ def build_subscription(
         )
         if source_dns_policy:
             cfg["dns"]["proxy-server-nameserver"] = list(cfg["dns"]["nameserver"])
-            cfg["dns"]["proxy-server-nameserver-policy"] = source_dns_policy
+            # 一旦配置专用节点 DNS，mihomo 的其他节点不再走普通 nameserver-policy；复制它，
+            # 保住 mesh/私有域名等既有专用解析。来源 exact-domain policy 最后覆盖同名规则。
+            proxy_dns_policy = dict(cfg["dns"].get("nameserver-policy", {}))
+            proxy_dns_policy.update(source_dns_policy)
+            cfg["dns"]["proxy-server-nameserver-policy"] = proxy_dns_policy
 
     region_order = sorted({region for _, region in active}, key=region_sort_key)
 

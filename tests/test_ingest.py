@@ -81,6 +81,10 @@ def test_extracts_proxy_nameservers_from_base64_clash_but_not_uri():
     assert extract_proxy_server_nameservers(encoded, "clash") == [
         "https://source.example/dns-query"
     ]
+    double_encoded = base64.b64encode(encoded.encode()).decode()
+    assert extract_proxy_server_nameservers(double_encoded, "base64") == [
+        "https://source.example/dns-query"
+    ]
     uri = "ss://" + _b64("aes-128-gcm:p") + "@s.example.com:8388#S"
     assert extract_proxy_server_nameservers(uri, "uri") == []
 

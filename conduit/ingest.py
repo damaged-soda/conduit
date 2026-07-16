@@ -60,6 +60,10 @@ def extract_proxy_server_nameservers(raw: str | bytes, source_type: str = "clash
         decoded = _b64decode(_text(raw))
         if decoded is not None:
             document = _clash_document(decoded)
+            if document is None:
+                nested = _b64decode(decoded)
+                if nested:
+                    document = _clash_document(nested)
     elif kind == "uri":
         return []
     else:

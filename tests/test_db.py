@@ -255,3 +255,26 @@ def test_store_migration_backfills_source_proxy_nameservers_from_latest_import(t
     assert Store(str(path)).source_proxy_nameservers() == {
         "source": ["https://source.example/dns-query"]
     }
+
+
+def test_store_retries_source_dns_backfill_when_column_already_exists(tmp_path):
+    path = tmp_path / "interrupted-source-dns.db"
+    raw = yaml.safe_dump({
+        "dns": {"proxy-server-nameserver": ["https://source.example/dns-query"]},
+        "proxies": [
+            {"name": "A", "type": "ss", "server": "a.example", "port": 1,
+             "password": "p", "udp": True},
+        ],
+    })
+    store = Store(str(path))
+    sub_id = store.add_subscription("Source DNS")
+    store._conn.execute(
+        "INSERT INTO imports(sub_id, raw, source_type, node_count) VALUES (?, ?, ?, ?)",
+        (sub_id, raw, "file", 1),
+    )
+    store._conn.commit()
+    store._conn.close()
+
+    assert Store(str(path)).source_proxy_nameservers() == {
+        sub_id: ["https://source.example/dns-query"]
+    }

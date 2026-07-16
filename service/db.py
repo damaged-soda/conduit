@@ -123,19 +123,23 @@ class Store:
                 "ALTER TABLE subscriptions ADD COLUMN proxy_server_nameservers "
                 "TEXT NOT NULL DEFAULT '[]'"
             )
-            # 元数据属于当前节点快照；从最近一次成功 import 回填，升级后无需重新导入订阅。
-            rows = self._conn.execute("SELECT id, type FROM subscriptions").fetchall()
-            for sub in rows:
-                latest = self._conn.execute(
-                    "SELECT raw FROM imports WHERE sub_id = ? ORDER BY id DESC LIMIT 1",
-                    (sub["id"],),
-                ).fetchone()
-                if not latest:
-                    continue
-                try:
-                    nameservers = extract_proxy_server_nameservers(latest["raw"], sub["type"])
-                except (TypeError, ValueError, yaml.YAMLError):
-                    continue  # 历史坏元数据不能阻止服务启动；节点快照仍保持可用。
+        # 元数据属于当前节点快照；从最近一次成功 import 回填，升级后无需重新导入订阅。
+        # 空值每次启动都可重试：即使 ALTER 已提交后进程中断，下次也不会永久跳过回填。
+        rows = self._conn.execute(
+            "SELECT id, type FROM subscriptions WHERE proxy_server_nameservers = '[]'"
+        ).fetchall()
+        for sub in rows:
+            latest = self._conn.execute(
+                "SELECT raw FROM imports WHERE sub_id = ? ORDER BY id DESC LIMIT 1",
+                (sub["id"],),
+            ).fetchone()
+            if not latest:
+                continue
+            try:
+                nameservers = extract_proxy_server_nameservers(latest["raw"], sub["type"])
+            except (TypeError, ValueError, yaml.YAMLError):
+                continue  # 历史坏元数据不能阻止服务启动；节点快照仍保持可用。
+            if nameservers:
                 self._conn.execute(
                     "UPDATE subscriptions SET proxy_server_nameservers = ? WHERE id = ?",
                     (json.dumps(nameservers, ensure_ascii=False), sub["id"]),

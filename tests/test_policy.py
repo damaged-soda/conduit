@@ -106,24 +106,33 @@ def test_full_dns_configurable():
 
 def test_full_dns_scopes_source_nameservers_to_exact_active_node_domains():
     nodes = [
-        _node("🇭🇰 custom", "Special.Example.", "source-doh"),
+        _node("🇭🇰 custom", "special.example.", "source-doh"),
         _node("🇯🇵 ordinary", "ordinary.example", "source-default"),
         _node("🇸🇬 ip", "203.0.113.1", "source-doh"),
+        _node("🇺🇸 ipv6", "[2001:db8::1]", "source-doh"),
     ]
     cfg = build_subscription(
         nodes,
         {},
         full=True,
+        policy={
+            "routes": [],
+            "final": "PROXY",
+            "dns": {"nameserver_policy": {"+.mesh.example": "100.100.100.100"}},
+        },
         source_proxy_nameservers={
             "source-doh": ["https://source.example/dns-query", "https://source.example/dns-query"]
         },
-    )["dns"]
-    assert cfg["proxy-server-nameserver"] == cfg["nameserver"]
-    assert cfg["proxy-server-nameserver-policy"] == {
-        "special.example": ["https://source.example/dns-query"]
+    )
+    assert cfg["dns"]["proxy-server-nameserver"] == cfg["dns"]["nameserver"]
+    assert cfg["dns"]["proxy-server-nameserver-policy"] == {
+        "+.mesh.example": "100.100.100.100",
+        "special.example.": ["https://source.example/dns-query"],
     }
-    assert "ordinary.example" not in cfg["proxy-server-nameserver-policy"]
-    assert "203.0.113.1" not in cfg["proxy-server-nameserver-policy"]
+    assert cfg["proxies"][0]["server"] == "special.example."
+    assert "ordinary.example" not in cfg["dns"]["proxy-server-nameserver-policy"]
+    assert "203.0.113.1" not in cfg["dns"]["proxy-server-nameserver-policy"]
+    assert "[2001:db8::1]" not in cfg["dns"]["proxy-server-nameserver-policy"]
 
 
 def test_source_dns_policy_only_appears_in_full_and_for_rendered_nodes():
