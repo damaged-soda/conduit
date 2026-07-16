@@ -1,8 +1,10 @@
 """ingest：把导入的订阅原始内容解析成统一的 Node 列表。
 
-支持 Clash/Mihomo YAML（只取 `proxies:`，丢弃订阅自带规则）、URI 行订阅，以及整份
-base64 包裹的 URI/YAML 订阅。节点「连不上」那种脏 = 后续 health-check + prune 的事，
-不在 ingest 管；这里只过滤明显残缺（缺 type/server/port）的条目。
+支持 Clash/Mihomo YAML（节点只取 `proxies:`，丢弃订阅自带规则）、URI 行订阅，以及整份
+base64 包裹的 URI/YAML 订阅。Clash 顶层仅额外白名单提取 `dns.proxy-server-nameserver`，
+供 render 按来源节点域名编译 DNS policy；不继承订阅的其他全局 DNS 设置。节点「连不上」
+那种脏 = 后续 health-check + prune 的事，不在 ingest 管；这里只过滤明显残缺
+（缺 type/server/port）的条目。
 """
 
 from __future__ import annotations
@@ -33,6 +35,56 @@ def parse_clash(raw: str | bytes) -> list:
     data = yaml.safe_load(raw)
     proxies = data.get("proxies") if isinstance(data, dict) else None
     return proxies if isinstance(proxies, list) else []
+
+
+def _clash_document(raw: str | bytes) -> dict | None:
+    data = yaml.safe_load(raw)
+    return data if isinstance(data, dict) and isinstance(data.get("proxies"), list) else None
+
+
+def extract_proxy_server_nameservers(raw: str | bytes, source_type: str = "clash") -> list[str]:
+    """提取 Clash 顶层的节点域名解析器；URI 订阅返回空列表。
+
+    这是有意收窄的来源元数据白名单：普通 `nameserver`、监听地址、fake-ip 等全局设置
+    仍由 conduit 管，避免一份订阅接管所有目标域名的 DNS。
+    """
+    kind = (source_type or "auto").strip().lower()
+    document: dict | None = None
+    if kind in {"auto", "clash"}:
+        document = _clash_document(raw)
+        if document is None:
+            decoded = _b64decode(_text(raw))
+            if decoded:
+                document = _clash_document(decoded)
+    elif kind == "base64":
+        decoded = _b64decode(_text(raw))
+        if decoded is not None:
+            document = _clash_document(decoded)
+            if document is None:
+                nested = _b64decode(decoded)
+                if nested:
+                    document = _clash_document(nested)
+    elif kind == "uri":
+        return []
+    else:
+        raise ValueError(f"暂不支持的订阅类型：{source_type}")
+
+    if not document:
+        return []
+    dns = document.get("dns")
+    if not isinstance(dns, dict) or "proxy-server-nameserver" not in dns:
+        return []
+    values = dns["proxy-server-nameserver"]
+    if not isinstance(values, list) or any(
+        not isinstance(value, str)
+        or not value.strip()
+        or "\n" in value
+        or "\r" in value
+        or len(value) > 2048
+        for value in values
+    ):
+        raise ValueError("dns.proxy-server-nameserver 非法")
+    return list(dict.fromkeys(value.strip() for value in values))
 
 
 def _usable(p: object) -> bool:

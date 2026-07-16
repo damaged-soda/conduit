@@ -46,6 +46,11 @@ clash-verge/mihomo。
 
 **订阅产物**（给 clash-verge/mihomo 导入）
 - `GET /sub/clash?token=&full=`：`pure` = proxies + 地区分组 + 规则；`full=1` 再加 fake-ip dns + tun（IPv6 接管 + default-nameserver，见根 [CONSTRAINTS.md](../CONSTRAINTS.md) 「full 模式必须项」）
+- Clash 来源若自带 `dns.proxy-server-nameserver`，导入会把它作为 secret 元数据随当前快照保存；
+  `full=1` 按该来源实际节点的精确域名生成 `proxy-server-nameserver-policy`，不会接管其他订阅或普通
+  目标域名。其他订阅 DNS 字段仍全部丢弃；相同节点域名声明不同专用 DNS 时，整份 `full=1`
+  输出返回 409（`pure` 不受影响）。启用来源 policy 后，未匹配节点使用普通 `nameserver`；已有
+  `nameserver-policy` 会同步到节点 policy，`fallback` 不作为有序兜底继承。
 - 导出节点名为 `[订阅名] 原节点名`。每个地区 `fallback` 的成员顺序为“订阅优先级 →
   上游原序”；默认 `AUTO-FAST` 仍跨全部节点按延迟选优。拖动后服务端产物立即变化，客户端刷新订阅后生效。
 - `GET /api/sub-token`（+ 页面显示可复制 URL）；token 保护节点凭据，DB `--no-access-log`

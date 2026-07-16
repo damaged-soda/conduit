@@ -30,6 +30,11 @@ full（带 dns+tun）的配置除上面三处外，还有三条不变量，缺�
 - **TUN 必须同时接管 IPv6**：`ipv6: true` + `dns.ipv6: true` + `tun.inet6-address`（auto-route 才会把 `::/0` 也指向 TUN）。否则系统 IPv6 默认路由仍在物理网卡，浏览器走 IPv6/HTTP3 会**绕过代理直连** → 出口变成本机真实地区 → 按区域封的站（如 claude.ai 看到 `loc=CN`）直接不可用。`route-exclude` 须含 IPv6 本地段（`::1`/`fc00::/7`（含 overlay ULA）/`fe80::/10`），保私有网/SSH 不断。
 - **TUN 里的真实 IP 连接必须能还原 DIRECT 域名上下文**：full 模式遇到 DIRECT 域名时必须开启 `sniffer`（至少 TLS/443 + QUIC/443 + HTTP/80，`parse-pure-ip: true`，`override-destination: true`），并把这些域名放进 `force-domain` 记录意图。否则 fake-ip 放行后的真实 AAAA 连接进入 TUN 时只剩 IP，`DOMAIN-SUFFIX,...,DIRECT` 可能无法命中，控制面/mesh 域名会被透明代理路径误伤。
 - **DNS 必须有 `default-nameserver`（引导）**：含 `system` 任何环境可引导。否则 mihomo 没法做最初解析（连 DoH 服务器都解析不了）→ DNS 引导死锁 → 出网全断。
+- **订阅自带节点 DNS 必须按来源域名隔离**：仅允许摄入 `dns.proxy-server-nameserver`，不得继承订阅的
+  普通 `nameserver` / 监听 / fake-ip 等全局设置；为该来源实际输出的节点域名编译
+  `proxy-server-nameserver-policy`。已有 `nameserver-policy` 同步给其他节点域名；未匹配节点走普通
+  `nameserver`，不把 `fallback` 并发混入伪装成有序兜底。同一域名的不同专用 DNS 声明必须让整份
+  full 输出拒绝生成，不能并发混用后赌返回顺序。
 
 ## 可用性目标
 - SLO 写清楚，别含糊：**新连接在节点被探测判定不健康后数秒内绕开**；**已建立的连接不迁移，由应用层重试**（mihomo 不会把在途连接搬到别的节点）。不承诺字面 < 1s、不承诺无感。

@@ -18,8 +18,10 @@ import secrets
 import sqlite3
 import threading
 
+import yaml
+
 from conduit.identity import access_id as compute_access_id
-from conduit.ingest import normalize
+from conduit.ingest import extract_proxy_server_nameservers, normalize
 from conduit.models import AccessId, EndpointId, Node
 
 _NODES_TABLE_SQL = """
@@ -47,6 +49,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   note       TEXT NOT NULL DEFAULT '',
   source_type TEXT NOT NULL DEFAULT 'file' CHECK (source_type IN ('file', 'url')),
   url        TEXT,                                   -- 基于链接拉取的 URL（含 token = secret，API 不返回）
+  proxy_server_nameservers TEXT NOT NULL DEFAULT '[]', -- 当前成功快照的来源级节点 DNS（secret，不经 API）
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   CHECK (
     (source_type = 'file' AND (url IS NULL OR url = '')) OR
@@ -114,6 +117,32 @@ class Store:
             for position, row in enumerate(rows):
                 self._conn.execute(
                     "UPDATE subscriptions SET position = ? WHERE id = ?", (position, row["id"])
+                )
+        if "proxy_server_nameservers" not in cols:
+            self._conn.execute(
+                "ALTER TABLE subscriptions ADD COLUMN proxy_server_nameservers "
+                "TEXT NOT NULL DEFAULT '[]'"
+            )
+        # 元数据属于当前节点快照；从最近一次成功 import 回填，升级后无需重新导入订阅。
+        # 空值每次启动都可重试：即使 ALTER 已提交后进程中断，下次也不会永久跳过回填。
+        rows = self._conn.execute(
+            "SELECT id, type FROM subscriptions WHERE proxy_server_nameservers = '[]'"
+        ).fetchall()
+        for sub in rows:
+            latest = self._conn.execute(
+                "SELECT raw FROM imports WHERE sub_id = ? ORDER BY id DESC LIMIT 1",
+                (sub["id"],),
+            ).fetchone()
+            if not latest:
+                continue
+            try:
+                nameservers = extract_proxy_server_nameservers(latest["raw"], sub["type"])
+            except (TypeError, ValueError, yaml.YAMLError):
+                continue  # 历史坏元数据不能阻止服务启动；节点快照仍保持可用。
+            if nameservers:
+                self._conn.execute(
+                    "UPDATE subscriptions SET proxy_server_nameservers = ? WHERE id = ?",
+                    (json.dumps(nameservers, ensure_ascii=False), sub["id"]),
                 )
         self._conn.execute(
             "UPDATE subscriptions SET source_type = "
@@ -412,9 +441,17 @@ class Store:
 
     # ---- nodes ----
 
-    def import_nodes(self, sub_id: str, raw: str, nodes: list[Node], source_type: str = "file") -> int:
+    def import_nodes(
+        self,
+        sub_id: str,
+        raw: str,
+        nodes: list[Node],
+        source_type: str = "file",
+        proxy_server_nameservers: list[str] | None = None,
+    ) -> int:
         """记录一次导入，并用上游原序原子替换该订阅的完整节点快照。"""
         source_type = _check_source_type(source_type)
+        proxy_server_nameservers = list(proxy_server_nameservers or [])
         with self._lock:
             try:
                 self._conn.execute(
@@ -448,6 +485,10 @@ class Store:
                             first_seen.get(n.access_id.value),
                         ),
                     )
+                self._conn.execute(
+                    "UPDATE subscriptions SET proxy_server_nameservers = ? WHERE id = ?",
+                    (json.dumps(proxy_server_nameservers, ensure_ascii=False), sub_id),
+                )
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()  # 整批导入原子化：中途失败不留半成品
@@ -523,6 +564,10 @@ class Store:
             )
         with self._lock:
             rows = self._conn.execute(q, args).fetchall()
+        return self._nodes_from_rows(rows)
+
+    @staticmethod
+    def _nodes_from_rows(rows) -> list[Node]:
         out: list[Node] = []
         for r in rows:
             ep = EndpointId(type=r["type"], server=r["server"], port=r["port"])
@@ -534,6 +579,48 @@ class Store:
                     source=r["sub_id"] or "",
                 )
             )
+        return out
+
+    def render_snapshot(self) -> tuple[list[Node], dict[str, list[str]]]:
+        """原子读取节点与其来源 DNS，避免刷新并发时把新旧快照拼在一起。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT n.access_id, n.sub_id, n.position, n.type, n.server, n.port, "
+                "n.raw_name, n.params, s.proxy_server_nameservers "
+                "FROM nodes n LEFT JOIN subscriptions s ON s.id = n.sub_id "
+                "ORDER BY COALESCE(s.position, 2147483647), n.position, n.id"
+            ).fetchall()
+        source_dns: dict[str, list[str]] = {}
+        for row in rows:
+            sub_id = row["sub_id"] or ""
+            if not sub_id or sub_id in source_dns:
+                continue
+            values = self._parse_proxy_nameservers(row["proxy_server_nameservers"])
+            if values:
+                source_dns[sub_id] = values
+        return self._nodes_from_rows(rows), source_dns
+
+    @staticmethod
+    def _parse_proxy_nameservers(raw: str | None) -> list[str]:
+        try:
+            values = json.loads(raw or "[]")
+        except (TypeError, json.JSONDecodeError):
+            return []
+        if isinstance(values, list) and all(isinstance(value, str) for value in values):
+            return values
+        return []
+
+    def source_proxy_nameservers(self) -> dict[str, list[str]]:
+        """返回来源订阅 id → 节点域名 DNS；仅供内部 render，绝不经 API 暴露。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, proxy_server_nameservers FROM subscriptions"
+            ).fetchall()
+        out: dict[str, list[str]] = {}
+        for row in rows:
+            values = self._parse_proxy_nameservers(row["proxy_server_nameservers"])
+            if values:
+                out[row["id"]] = values
         return out
 
     # ---- 标签（按 access_id，跟着节点走、不随订阅删除）----

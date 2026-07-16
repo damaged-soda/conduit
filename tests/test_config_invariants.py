@@ -227,6 +227,27 @@ def check_unique_names(cfg: dict) -> list[str]:
     return v
 
 
+def check_source_dns_policy(cfg: dict) -> list[str]:
+    """来源级节点 DNS policy 必须有全局节点 DNS 兜底，且值保持为非空 resolver 列表。"""
+    dns = cfg.get("dns", {})
+    policy = dns.get("proxy-server-nameserver-policy", {})
+    if not policy:
+        return []
+    v: list[str] = []
+    if not dns.get("proxy-server-nameserver"):
+        v.append("有 proxy-server-nameserver-policy 但缺全局 proxy-server-nameserver")
+    if not isinstance(policy, dict):
+        return v + ["proxy-server-nameserver-policy 不是映射"]
+    for domain, resolvers in policy.items():
+        if not isinstance(domain, str) or not domain:
+            v.append("proxy-server-nameserver-policy 含非法域名 key")
+        if not isinstance(resolvers, list) or not resolvers or not all(
+            isinstance(resolver, str) and resolver for resolver in resolvers
+        ):
+            v.append("proxy-server-nameserver-policy 含非法 resolver 列表")
+    return v
+
+
 def all_violations(cfg: dict) -> dict[str, list[str]]:
     return {
         "direct_first": check_direct_first_and_match(cfg, DIRECT),
@@ -234,6 +255,7 @@ def all_violations(cfg: dict) -> dict[str, list[str]]:
         "rule_targets": check_rule_targets(cfg),
         "group_members": check_group_members(cfg),
         "unique_names": check_unique_names(cfg),
+        "source_dns_policy": check_source_dns_policy(cfg),
     }
 
 
@@ -250,6 +272,13 @@ def test_bad_fixture_is_caught():
     assert any(v.values()), "坏夹具竟然没被任何不变量抓到——检查形同虚设"
     for key in ("direct_first", "rule_targets", "group_members"):
         assert v[key], f"检查 {key} 没抓到坏夹具里它应抓的违规"
+
+
+def test_source_dns_policy_requires_global_proxy_dns():
+    cfg = {"dns": {"proxy-server-nameserver-policy": {"node.example": ["system"]}}}
+    assert check_source_dns_policy(cfg) == [
+        "有 proxy-server-nameserver-policy 但缺全局 proxy-server-nameserver"
+    ]
 
 
 @pytest.mark.skipif(shutil.which("mihomo") is None, reason="mihomo 未安装")

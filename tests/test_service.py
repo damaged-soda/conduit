@@ -451,6 +451,82 @@ def test_sub_clash_full_has_dns_and_tun():
     assert cfg["dns"]["enhanced-mode"] == "fake-ip" and cfg["tun"]["enable"] is True
 
 
+def test_sub_clash_full_compiles_source_dns_policy_without_exposing_doh():
+    c = _client()
+    custom = _mksub(c, "Custom DNS")
+    ordinary = _mksub(c, "Ordinary")
+    doh = "https://source-secret.example/dns-query"
+    custom_raw = yaml.safe_dump({
+        "dns": {
+            "proxy-server-nameserver": [doh],
+            "nameserver": ["https://must-not-be-inherited.example/dns-query"],
+        },
+        "proxies": [
+            {"name": "Hong Kong", "type": "ss", "server": "special.example", "port": 1,
+             "password": "p", "udp": True},
+        ],
+    }, sort_keys=False)
+    ordinary_raw = yaml.safe_dump({
+        "proxies": [
+            {"name": "Japan", "type": "ss", "server": "ordinary.example", "port": 2,
+             "password": "p", "udp": True},
+        ],
+    }, sort_keys=False)
+    assert c.post(f"/api/subscriptions/{custom}/import", json={"raw": custom_raw}).status_code == 200
+    assert c.post(f"/api/subscriptions/{ordinary}/import", json={"raw": ordinary_raw}).status_code == 200
+    assert doh not in c.get("/api/subscriptions").text
+    assert doh not in c.get(f"/api/subscriptions/{custom}").text
+
+    token = c.get("/api/sub-token").json()["token"]
+    pure = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
+    assert "dns" not in pure
+    cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token, "full": 1}).text)
+    assert cfg["dns"]["proxy-server-nameserver"] == cfg["dns"]["nameserver"]
+    assert cfg["dns"]["proxy-server-nameserver-policy"] == {
+        "special.example": [doh]
+    }
+    assert "ordinary.example" not in cfg["dns"]["proxy-server-nameserver-policy"]
+    assert "must-not-be-inherited.example" not in str(cfg["dns"])
+
+
+def test_source_dns_conflict_returns_sanitized_409():
+    c = _client()
+    first, second = _mksub(c, "First"), _mksub(c, "Second")
+
+    def raw(doh: str, port: int) -> str:
+        return yaml.safe_dump({
+            "dns": {"proxy-server-nameserver": [doh]},
+            "proxies": [
+                {"name": f"Node {port}", "type": "ss", "server": "shared.example",
+                 "port": port, "password": "p", "udp": True},
+            ],
+        })
+
+    c.post(f"/api/subscriptions/{first}/import", json={"raw": raw("https://one.example/dns-query", 1)})
+    c.post(f"/api/subscriptions/{second}/import", json={"raw": raw("https://two.example/dns-query", 2)})
+    token = c.get("/api/sub-token").json()["token"]
+    response = c.get("/sub/clash", params={"token": token, "full": 1})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "同一节点域名被多个订阅声明为不同的专用 DNS"
+    assert "shared.example" not in response.text
+
+
+def test_invalid_source_dns_metadata_does_not_replace_snapshot():
+    c = _client()
+    sub_id = _mksub(c)
+    assert c.post(f"/api/subscriptions/{sub_id}/import", json={"raw": FIXTURE}).status_code == 200
+    bad = yaml.safe_dump({
+        "dns": {"proxy-server-nameserver": "https://not-a-list.example/dns-query"},
+        "proxies": [
+            {"name": "New", "type": "ss", "server": "new.example", "port": 1,
+             "password": "p", "udp": True},
+        ],
+    })
+    response = c.post(f"/api/subscriptions/{sub_id}/import", json={"raw": bad})
+    assert response.status_code == 400
+    assert len(c.get(f"/api/subscriptions/{sub_id}/nodes").json()) == 2
+
+
 def test_sub_clash_empty_is_valid_all_direct():
     c = _client()
     token = c.get("/api/sub-token").json()["token"]

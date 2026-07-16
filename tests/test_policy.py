@@ -5,17 +5,24 @@ from __future__ import annotations
 import pathlib
 import sys
 
+import pytest
+
 HERE = pathlib.Path(__file__).parent
 sys.path.insert(0, str(HERE.parent))
 
 from conduit.models import AccessId, EndpointId, Node  # noqa: E402
 from conduit.policy import DEFAULT_POLICY, policy_rules, rule_providers_block  # noqa: E402
-from conduit.render import build_subscription  # noqa: E402
+from conduit.render import SourceDnsConflict, build_subscription  # noqa: E402
 
 
-def _node(name: str) -> Node:
-    ep = EndpointId(type="trojan", server="s.com", port=443)
-    return Node(access_id=AccessId(value=name, endpoint=ep), raw_name=name, params={"udp": True}, source="t")
+def _node(name: str, server: str = "s.com", source: str = "t") -> Node:
+    ep = EndpointId(type="trojan", server=server, port=443)
+    return Node(
+        access_id=AccessId(value=name, endpoint=ep),
+        raw_name=name,
+        params={"udp": True},
+        source=source,
+    )
 
 
 def test_policy_rules_content_and_order():
@@ -95,6 +102,74 @@ def test_full_dns_configurable():
     assert cfg["default-nameserver"] == ["223.6.6.6"]
     assert cfg["nameserver"] == ["https://dns.alidns.com/dns-query"]
     assert cfg["fallback"] == ["8.8.8.8"]
+
+
+def test_full_dns_scopes_source_nameservers_to_exact_active_node_domains():
+    nodes = [
+        _node("🇭🇰 custom", "special.example.", "source-doh"),
+        _node("🇯🇵 ordinary", "ordinary.example", "source-default"),
+        _node("🇸🇬 ip", "203.0.113.1", "source-doh"),
+        _node("🇺🇸 ipv6", "[2001:db8::1]", "source-doh"),
+    ]
+    cfg = build_subscription(
+        nodes,
+        {},
+        full=True,
+        policy={
+            "routes": [],
+            "final": "PROXY",
+            "dns": {"nameserver_policy": {"+.mesh.example": "100.100.100.100"}},
+        },
+        source_proxy_nameservers={
+            "source-doh": ["https://source.example/dns-query", "https://source.example/dns-query"]
+        },
+    )
+    assert cfg["dns"]["proxy-server-nameserver"] == cfg["dns"]["nameserver"]
+    assert cfg["dns"]["proxy-server-nameserver-policy"] == {
+        "+.mesh.example": "100.100.100.100",
+        "special.example.": ["https://source.example/dns-query"],
+    }
+    assert cfg["proxies"][0]["server"] == "special.example."
+    assert "ordinary.example" not in cfg["dns"]["proxy-server-nameserver-policy"]
+    assert "203.0.113.1" not in cfg["dns"]["proxy-server-nameserver-policy"]
+    assert "[2001:db8::1]" not in cfg["dns"]["proxy-server-nameserver-policy"]
+
+
+def test_source_dns_policy_only_appears_in_full_and_for_rendered_nodes():
+    node = _node("🇭🇰 custom", "special.example", "source-doh")
+    source_dns = {"source-doh": ["https://source.example/dns-query"]}
+    assert "dns" not in build_subscription(
+        [node], {}, source_proxy_nameservers=source_dns
+    )
+    full = build_subscription(
+        [node],
+        {},
+        full=True,
+        tags={node.access_id.value: {"quarantined": True}},
+        source_proxy_nameservers=source_dns,
+    )
+    assert "proxy-server-nameserver-policy" not in full["dns"]
+
+
+def test_source_dns_conflict_rejected_even_when_order_only_is_ignored():
+    a = _node("🇭🇰 A", "shared.example", "source-a")
+    b = _node("🇯🇵 B", "shared.example", "source-b")
+    first = "https://first.example/dns-query"
+    second = "https://second.example/dns-query"
+    cfg = build_subscription(
+        [a, b],
+        {},
+        full=True,
+        source_proxy_nameservers={"source-a": [first, second], "source-b": [second, first]},
+    )
+    assert cfg["dns"]["proxy-server-nameserver-policy"]["shared.example"] == [first, second]
+    with pytest.raises(SourceDnsConflict, match="不同的专用 DNS"):
+        build_subscription(
+            [a, b],
+            {},
+            full=True,
+            source_proxy_nameservers={"source-a": [first], "source-b": [second]},
+        )
 
 
 def test_full_mode_captures_ipv6():
