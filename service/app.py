@@ -24,9 +24,9 @@ from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from conduit.ingest import normalize
+from conduit.ingest import extract_proxy_server_nameservers, normalize
 from conduit.policy import DEFAULT_POLICY, GEOIP_CATALOG, GEOSITE_CATALOG
-from conduit.render import render_subscription, subscription_rules
+from conduit.render import SourceDnsConflict, render_subscription, subscription_rules
 from conduit.tags import normalize_region, region_of, region_sort_key
 from conduit.udp import node_supports_udp
 
@@ -192,9 +192,14 @@ def _with_mesh_bypass(policy: dict) -> dict:
 def _normalize_and_store(store: Store, sub: dict, raw: str, source_type: str) -> dict:
     try:
         nodes = normalize(raw, sub["type"], sub["id"])
+        proxy_server_nameservers = extract_proxy_server_nameservers(raw, sub["type"])
     except (ValueError, TypeError, yaml.YAMLError):  # sanitized 400：不回显订阅内容 / parser 细节
         raise HTTPException(400, "导入内容解析失败（请确认是合法的 clash/URI/base64 订阅）")
-    return {"imported": store.import_nodes(sub["id"], raw, nodes, source_type)}
+    return {
+        "imported": store.import_nodes(
+            sub["id"], raw, nodes, source_type, proxy_server_nameservers
+        )
+    }
 
 
 def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_url) -> FastAPI:
@@ -418,14 +423,19 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
             raise HTTPException(403, "bad token")
         subscriptions = store.list_subscriptions()
         source_names = {sub["id"]: sub["name"] for sub in subscriptions}
-        cfg = render_subscription(
-            store.nodes_for_render(),
-            {},
-            full=full,
-            tags=store.get_node_tags(),
-            policy=_policy(),
-            source_names=source_names,
-        )
+        nodes, source_proxy_nameservers = store.render_snapshot()
+        try:
+            cfg = render_subscription(
+                nodes,
+                {},
+                full=full,
+                tags=store.get_node_tags(),
+                policy=_policy(),
+                source_names=source_names,
+                source_proxy_nameservers=source_proxy_nameservers,
+            )
+        except SourceDnsConflict as exc:
+            raise HTTPException(409, str(exc))
         # 标准订阅响应头：让 clash-verge/mihomo 当订阅文件处理（否则浏览器直接显示、客户端导入失败）。
         return Response(
             cfg,

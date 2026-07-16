@@ -18,7 +18,11 @@ sys.path.insert(0, str(HERE))           # for test_config_invariants
 sys.path.insert(0, str(HERE.parent))    # repo root, for the conduit package
 
 from conduit.identity import access_id, endpoint_id  # noqa: E402
-from conduit.ingest import normalize, normalize_with_stats  # noqa: E402
+from conduit.ingest import (  # noqa: E402
+    extract_proxy_server_nameservers,
+    normalize,
+    normalize_with_stats,
+)
 from conduit.render import render  # noqa: E402
 from test_config_invariants import DIRECT, all_violations  # noqa: E402
 
@@ -40,6 +44,56 @@ def test_normalize_extracts_proxies_drops_rules():
     assert us.source == "vendor-a"
     assert set(us.params) == {"cipher", "password", "udp"}  # 核心字段不进 params
     assert "type" not in us.params and "server" not in us.params
+
+
+def test_extracts_only_source_proxy_nameservers():
+    raw = yaml.safe_dump({
+        "dns": {
+            "nameserver": ["https://ordinary.example/dns-query"],
+            "proxy-server-nameserver": [
+                "https://source.example/dns-query",
+                "https://source.example/dns-query",
+                "system",
+            ],
+            "listen": "0.0.0.0:53",
+        },
+        "proxies": [
+            {"name": "A", "type": "ss", "server": "a.example", "port": 1},
+        ],
+    }, sort_keys=False)
+    assert extract_proxy_server_nameservers(raw, "clash") == [
+        "https://source.example/dns-query",
+        "system",
+    ]
+
+
+def test_extracts_proxy_nameservers_from_base64_clash_but_not_uri():
+    clash = yaml.safe_dump({
+        "dns": {"proxy-server-nameserver": ["https://source.example/dns-query"]},
+        "proxies": [
+            {"name": "A", "type": "ss", "server": "a.example", "port": 1},
+        ],
+    })
+    encoded = base64.b64encode(clash.encode()).decode()
+    assert extract_proxy_server_nameservers(encoded, "base64") == [
+        "https://source.example/dns-query"
+    ]
+    assert extract_proxy_server_nameservers(encoded, "clash") == [
+        "https://source.example/dns-query"
+    ]
+    uri = "ss://" + _b64("aes-128-gcm:p") + "@s.example.com:8388#S"
+    assert extract_proxy_server_nameservers(uri, "uri") == []
+
+
+def test_invalid_source_proxy_nameservers_rejected():
+    raw = yaml.safe_dump({
+        "dns": {"proxy-server-nameserver": "https://not-a-list.example/dns-query"},
+        "proxies": [
+            {"name": "A", "type": "ss", "server": "a.example", "port": 1},
+        ],
+    })
+    with pytest.raises(ValueError, match="proxy-server-nameserver"):
+        extract_proxy_server_nameservers(raw)
 
 
 def test_normalize_preserves_proxies_without_udp_support():

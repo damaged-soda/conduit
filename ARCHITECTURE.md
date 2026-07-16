@@ -32,8 +32,9 @@ fetch → normalize → tag → prune → render → validate
 
 1. **fetch**：抓订阅原始内容（多格式：clash yaml / URI 行 / base64 等）。
 2. **normalize**：解析为统一 `Node`，算指纹；跳过残缺记录、拒绝非法端口等无法解析输入，不按 UDP
-   资格过滤。**丢弃订阅自带的规则系统**。每次成功摄入把结果作为该订阅的完整快照，保存上游原序；
-   失败不替换旧快照。
+   资格过滤。**丢弃订阅自带的规则系统与全局 DNS 设置**，仅白名单保留
+   `dns.proxy-server-nameserver` 作为来源级节点连接依赖。每次成功摄入把节点与该元数据作为订阅的
+   完整快照，保存上游原序；失败不替换旧快照。
 3. **tag**：auto（正则）+ manual（映射）；未见过的指纹进隔离区。
 4. **prune**：按健康历史剔除长期不健康节点（阈值/时间窗待定）。
 5. **render**：按模板渲染**某个 target** 的 mihomo 配置（inline proxies + 标签 group + 规则 + 注入 direct-list + per-target overlay）；输出前过滤不支持 UDP 的节点。
@@ -62,6 +63,10 @@ mihomo health-check → 指标存储 → 生成器读「过去 N 时长不健康
 - 匹配来源：内置 `geosite`/`geoip`(mihomo 自带 geo 库，cn/广告大类) + `rule_set`(MetaCubeX `.mrs` 外部规则集，引用而非拷贝、自动更新)。**`.mrs` 只支持 `domain`/`ipcidr`，不支持 `classical`** → process/port 等用显式 `process_name`/`dst_port` 渲成 PROCESS-NAME/DST-PORT。
 - **可编辑**：策略存 DB(`meta` key=`policy`)，无则回落仓库 `DEFAULT_POLICY`；页面 / `PUT /api/policy` 改。`rule_providers` 服务端控制(防 PUT 注入 URL → SSRF)、geosite/geoip 走服务端白名单。
 - **部署侧 mesh DNS 输入**：调用方可通过 `CONDUIT_MESH_DOMAIN_SUFFIXES` 注入私有 mesh / MagicDNS 后缀；需要专用解析器时用 `CONDUIT_MESH_DNS_SERVER` 生成 `nameserver-policy`。这些运行时合入 policy，不写 DB，不把具体 tailnet 名固化进 conduit。
+- **来源级节点 DNS**：若 Clash 订阅自带 `dns.proxy-server-nameserver`，render 为该来源当前实际输出的
+  每个节点域名生成精确 `proxy-server-nameserver-policy`；其他来源仍走全局节点 DNS。IP 节点不生成
+  policy；同一域名被不同来源声明为不同解析器时 fail-closed，避免静默选择错误入口。DoH URL 随
+  订阅快照存 DB（secret），不经管理 API 返回。
 
 ## 分组 + 订阅输出（已落地）
 - **地区分组**(`conduit/tags.py`)：`region_of` **文本关键词优先、旗帜 emoji 兜底**(机场常把台湾标 🇨🇳)；

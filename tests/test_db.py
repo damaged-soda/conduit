@@ -12,6 +12,7 @@ HERE = pathlib.Path(__file__).parent
 sys.path.insert(0, str(HERE.parent))
 
 from conduit.identity import access_id  # noqa: E402
+from conduit.ingest import normalize  # noqa: E402
 from service.db import Store  # noqa: E402
 
 
@@ -190,3 +191,67 @@ def test_store_migrates_subscription_and_node_order_from_latest_import(tmp_path)
     assert [sub["id"] for sub in migrated.list_subscriptions()] == ["early", "late"]
     assert [node["raw_name"] for node in migrated.list_nodes("early")] == ["SG first", "SG second"]
     assert [node["position"] for node in migrated.list_nodes("early")] == [0, 1]
+
+
+def test_store_persists_current_source_proxy_nameservers_without_api_fields():
+    store = Store(":memory:")
+    sub_id = store.add_subscription("Source DNS")
+    proxy = {
+        "name": "A", "type": "ss", "server": "a.example", "port": 1,
+        "password": "p", "udp": True,
+    }
+    nodes = normalize(yaml.safe_dump({"proxies": [proxy]}), "auto", sub_id)
+    store.import_nodes(
+        sub_id,
+        yaml.safe_dump({"proxies": [proxy]}),
+        nodes,
+        proxy_server_nameservers=["https://source.example/dns-query"],
+    )
+    assert store.source_proxy_nameservers() == {
+        sub_id: ["https://source.example/dns-query"]
+    }
+    snapshot_nodes, snapshot_dns = store.render_snapshot()
+    assert [node.raw_name for node in snapshot_nodes] == ["A"]
+    assert snapshot_dns == {sub_id: ["https://source.example/dns-query"]}
+    assert "proxy_server_nameservers" not in store.list_subscriptions()[0]
+
+    store.import_nodes(sub_id, yaml.safe_dump({"proxies": [proxy]}), nodes)
+    assert store.source_proxy_nameservers() == {}
+
+
+def test_store_migration_backfills_source_proxy_nameservers_from_latest_import(tmp_path):
+    path = tmp_path / "source-dns.db"
+    raw = yaml.safe_dump({
+        "dns": {"proxy-server-nameserver": ["https://source.example/dns-query"]},
+        "proxies": [
+            {"name": "A", "type": "ss", "server": "a.example", "port": 1,
+             "password": "p", "udp": True},
+        ],
+    })
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE subscriptions (
+          id TEXT PRIMARY KEY, name TEXT, position INTEGER, type TEXT, note TEXT,
+          source_type TEXT, url TEXT, created_at TEXT
+        );
+        CREATE TABLE imports (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, sub_id TEXT, raw TEXT,
+          source_type TEXT, node_count INTEGER, at TEXT
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO subscriptions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("source", "Source", 0, "auto", "", "file", None, "2026-01-01"),
+    )
+    conn.execute(
+        "INSERT INTO imports(sub_id, raw, source_type, node_count, at) VALUES (?, ?, ?, ?, ?)",
+        ("source", raw, "file", 1, "2026-01-01"),
+    )
+    conn.commit()
+    conn.close()
+
+    assert Store(str(path)).source_proxy_nameservers() == {
+        "source": ["https://source.example/dns-query"]
+    }

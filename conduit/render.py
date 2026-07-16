@@ -19,6 +19,7 @@ domain_wildcard → fake-ip 语义对齐、IPv6 controller bind 解析、validat
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 
 import yaml
 
@@ -144,6 +145,32 @@ def _dedupe(seq: list[str]) -> list[str]:
     return out
 
 
+class SourceDnsConflict(ValueError):
+    """同一个节点域名被多个来源声明为不同的专用解析策略。"""
+
+
+def _source_dns_policy(
+    nodes: list[Node], source_proxy_nameservers: dict[str, list[str]]
+) -> dict[str, list[str]]:
+    policy: dict[str, list[str]] = {}
+    for node in nodes:
+        nameservers = _dedupe(source_proxy_nameservers.get(node.source, []))
+        if not nameservers:
+            continue
+        server = node.access_id.endpoint.server.strip().lower().rstrip(".")
+        try:
+            ipaddress.ip_address(server.strip("[]"))
+            continue  # IP 节点不需要 DNS policy。
+        except ValueError:
+            pass
+        current = policy.get(server)
+        if current is None:
+            policy[server] = nameservers
+        elif set(current) != set(nameservers):
+            raise SourceDnsConflict("同一节点域名被多个订阅声明为不同的专用 DNS")
+    return policy
+
+
 def build_config(nodes: list[Node], direct: dict, overlay: dict) -> dict:
     """渲染成 mihomo 配置 dict（rules 顺序关键：direct-list 必须在最前）。"""
     nodes = [n for n in nodes if node_supports_udp(n)]
@@ -228,6 +255,7 @@ def build_subscription(
     tags: dict | None = None,
     policy: dict | None = None,
     source_names: dict[str, str] | None = None,
+    source_proxy_nameservers: dict[str, list[str]] | None = None,
 ) -> dict:
     """订阅用配置：标准 clash 骨架 + 按 region 分组的 proxy-groups + 规则；`full=True` 再加 dns+tun。
 
@@ -244,6 +272,7 @@ def build_subscription(
     """
     tags = tags or {}
     policy = policy or DEFAULT_POLICY
+    source_proxy_nameservers = source_proxy_nameservers or {}
     cfg: dict = {
         "port": 7890,
         "socks-port": 7891,
@@ -327,6 +356,16 @@ def build_subscription(
         cfg["rules"] = ["MATCH,DIRECT"]
         return cfg
 
+    if full:
+        # 订阅自带的节点 DNS 只作用于该订阅当前实际输出的域名。全局节点 DNS 保持与普通
+        # nameserver 相同，供未声明专用 DNS 的其他订阅使用；policy 需要它非空才会生效。
+        source_dns_policy = _source_dns_policy(
+            [node for node, _ in active], source_proxy_nameservers
+        )
+        if source_dns_policy:
+            cfg["dns"]["proxy-server-nameserver"] = list(cfg["dns"]["nameserver"])
+            cfg["dns"]["proxy-server-nameserver-policy"] = source_dns_policy
+
     region_order = sorted({region for _, region in active}, key=region_sort_key)
 
     nodes_only = [n for n, _ in active]
@@ -379,9 +418,18 @@ def render_subscription(
     tags: dict | None = None,
     policy: dict | None = None,
     source_names: dict[str, str] | None = None,
+    source_proxy_nameservers: dict[str, list[str]] | None = None,
 ) -> str:
     return yaml.safe_dump(
-        build_subscription(nodes, direct_list, full, tags, policy, source_names),
+        build_subscription(
+            nodes,
+            direct_list,
+            full,
+            tags,
+            policy,
+            source_names,
+            source_proxy_nameservers,
+        ),
         sort_keys=False,
         allow_unicode=True,
     )
