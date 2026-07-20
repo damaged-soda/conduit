@@ -40,7 +40,7 @@ fetch → normalize → tag → prune → render → validate
 5. **render**：按模板渲染**某个 target** 的 mihomo 配置（inline proxies + 标签 group + 规则 + 注入 direct-list + per-target overlay）；输出前过滤不支持 UDP 的节点。
 6. **validate**：mihomo 配置自检 + schema 校验；失败即阻断。
 
-**送达不在核心流水线里**：conduit 产出 per-target 工件，怎么送到主机、怎么 reload，由调用方决定（conduit 至多提供通用 hook）。
+**送达不在核心流水线里**：conduit 产出 per-target 工件，怎么送到主机、怎么 reload，由调用方决定（conduit 至多提供通用 hook：订阅侧参考实现 `scripts/conduit-mihomo-pull.py`）。
 
 ## 输出形态（影响健康检查，要先定）
 节点写进配置有两种形态，二选一 —— 它决定故障切换 / 剔除能不能生效：

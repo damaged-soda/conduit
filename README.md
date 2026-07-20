@@ -10,5 +10,6 @@ conduit **不感知任何具体拓扑** —— 主机叫什么、有没有私有
 - 架构与生成流水线 → [ARCHITECTURE.md](ARCHITECTURE.md)
 - 仓库工作约定 → [AGENTS.md](AGENTS.md)
 - 怎么安全地测 → [TESTING.md](TESTING.md)
+- 主机侧拉取 hook（pull + 本地 overlay + 校验 + 原子安装 + 重启）→ `scripts/conduit-mihomo-pull.py`
 
 > 订阅 URL、secret、调用方喂入的现状值、生成产物 —— 都不进 git。
