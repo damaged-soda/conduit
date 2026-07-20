@@ -1,0 +1,19 @@
+# conduit-mihomo-pull 的 --overlay 示例：deep-merge 进订阅输出的本地覆盖项。
+# dict 递归合并，list / 标量整体替换。真实值按机器填，含 secret 的 overlay 别进 git。
+
+# mihomo 外部控制面（dashboard / API 选节点）。非 loopback 绑定必须另配 secret。
+external-controller: 127.0.0.1:9090
+external-controller-cors:
+  allow-origins:
+    - https://yacd.metacubex.one
+    - https://metacubex.github.io
+    - https://board.zash.run.place
+    - tauri://localhost
+    - http://tauri.localhost
+    - http://localhost:3000
+  allow-private-network: true
+
+# 手动选的组 / 节点持久化到 cache.db，重启后恢复
+profile:
+  tracing: true
+  store-selected: true
