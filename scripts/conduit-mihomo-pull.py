@@ -1,23 +1,28 @@
 #!/usr/bin/env python3
-"""conduit-mihomo-pull：从 conduit 订阅 URL 拉取配置，叠本地 overlay，校验后原子安装并按需重启 mihomo。
+"""conduit-mihomo-pull：从 conduit 订阅 URL 拉取配置，叠本地 overlay，校验后原子安装并激活 mihomo。
 
 定位（ARCHITECTURE.md「送达不在核心流水线里」）：conduit 只生成订阅；每台主机的本地覆盖项
 （external-controller / profile / 监听等）由调用方在安装侧叠加。本脚本是那个「通用 hook」：
 
-    pull → deep-merge overlay → mihomo -t 校验 → 备份 + 原子替换 → 内容变化时重启
+    pull → deep-merge overlay → 安全检查 → mihomo -t → 备份 + 原子替换 → reload / 重启激活
 
-- 订阅 URL 是 secret：从 env 文件（默认 `<home>/conduit.env`，建议 0600）里的
-  `CONDUIT_SUB_URL=...` 或同名环境变量读取；不出现在日志和进程参数里。
+- 订阅 URL 是 secret：只从 env 文件（默认 `<home>/conduit.env`，建议 0600）里的
+  `CONDUIT_SUB_URL=...` 或同名环境变量读取；不进命令行参数，不出现在日志 / 错误信息里。
 - overlay 是普通 YAML dict，与订阅输出 deep-merge：dict 递归合并，list / 标量整体替换。
-  示例见 examples/mihomo-pull-overlay.example.yaml。
-- 幂等：合并结果与现有配置一致时直接退出，不备份、不重启。
-- fail-closed：拉取 / 解析 / 校验任一步失败都不动现有配置。
+  示例见 examples/mihomo-pull-overlay.example.yaml。合并结果套用与 render.py 相同的安全
+  不变量：external-controller 绑非 loopback 且无 secret → 拒绝安装。
+- 幂等：合并结果与现有配置一致时直接退出，不备份、不激活。
+- fail-closed：拉取 / 解析 / 校验任一步失败都不动现有配置；激活方式在执行前确定，
+  激活失败自动回滚旧配置。激活优先走 controller API reload（不中断流量），
+  无 controller 时退回 brew services / systemctl 重启；都不可用则必须显式 --no-restart。
+- 权限：替换保留现有文件 mode；全新安装默认 0600（配置含节点凭据）。
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import os
 import shlex
 import shutil
@@ -32,10 +37,12 @@ import yaml
 _FETCH_TIMEOUT = 30
 _HOME_CANDIDATES = ("/opt/homebrew/etc/mihomo", "/etc/mihomo")
 _MIHOMO_CANDIDATES = ("/opt/homebrew/opt/mihomo/bin/mihomo", "/usr/local/bin/mihomo")
+# 与 conduit/render.py 的 controller 不变量一致：非 loopback 绑定必须带 secret
+_LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
 
 class PullError(RuntimeError):
-    """拉取 / 解析 / 校验 / 安装失败。任何一步失败都不应碰现有配置。"""
+    """拉取 / 解析 / 校验 / 安装 / 激活失败。除激活回滚外，任何失败都不应碰现有配置。"""
 
 
 def deep_merge(base, overlay):
@@ -48,36 +55,53 @@ def deep_merge(base, overlay):
     return overlay
 
 
-def load_sub_url(args: argparse.Namespace) -> str:
-    """优先级：--url > $CONDUIT_SUB_URL > env 文件。都找不到 → 报错。"""
-    url = args.url or os.environ.get("CONDUIT_SUB_URL")
-    if not url and args.env_file.exists():
-        for line in args.env_file.read_text(encoding="utf-8").splitlines():
+def load_sub_url(env_file: Path) -> str:
+    """$CONDUIT_SUB_URL > env 文件。都找不到 → 报错。不提供 --url：token 不该进进程参数。"""
+    url = os.environ.get("CONDUIT_SUB_URL")
+    if not url and env_file.exists():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line and not line.startswith("#") and line.startswith("CONDUIT_SUB_URL="):
                 url = line.split("=", 1)[1].strip().strip("'\"")
                 break
     if not url:
-        raise PullError(f"找不到订阅 URL：设 CONDUIT_SUB_URL 或写进 {args.env_file}")
+        raise PullError(f"找不到订阅 URL：设 CONDUIT_SUB_URL 或写进 {env_file}")
     return url
 
 
 def fetch(url: str) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": "conduit-mihomo-pull"})
+    """错误信息只带异常类型 / HTTP 状态码，绝不回显 URL（含 token）。"""
     try:
+        req = urllib.request.Request(url, headers={"User-Agent": "conduit-mihomo-pull"})
         with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT) as resp:
             return resp.read().decode("utf-8")
-    except Exception as e:  # 网络 / HTTP 错误统一 fail-closed；不回显 URL（secret）
-        raise PullError(f"拉取订阅失败：{e}") from e
+    except urllib.error.HTTPError as e:
+        raise PullError(f"拉取订阅失败：HTTP {e.code}") from e
+    except Exception as e:
+        raise PullError(f"拉取订阅失败：{type(e).__name__}") from e
 
 
-def build_config(sub_text: str, overlay: dict | None) -> str:
-    """解析订阅 → 叠 overlay → 导出 YAML。输入不像完整配置时 fail-closed。"""
+def build_config(sub_text: str, overlay: dict | None) -> dict:
+    """解析订阅 → 叠 overlay。输入不像完整配置时 fail-closed。"""
     cfg = yaml.safe_load(sub_text)
     if not isinstance(cfg, dict) or not cfg.get("proxies") or not cfg.get("proxy-groups"):
         raise PullError("订阅内容不像完整 mihomo 配置（缺 proxies / proxy-groups）——拒绝安装")
     if overlay:
         cfg = deep_merge(cfg, overlay)
+    return cfg
+
+
+def check_controller_safety(cfg: dict) -> None:
+    """套用 render.py 的 controller 不变量，防 overlay 把 API 绑到非 loopback 裸奔。"""
+    bind = cfg.get("external-controller")
+    if not bind:
+        return
+    host, _, _ = str(bind).rpartition(":")
+    if host not in _LOOPBACK and not cfg.get("secret"):
+        raise PullError(f"external-controller 绑定非 loopback({bind}) 但无 secret —— 拒绝安装")
+
+
+def dump_config(cfg: dict) -> str:
     return yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True)
 
 
@@ -96,28 +120,59 @@ def validate(mihomo_bin: str, home: Path, config_text: str) -> None:
         Path(tmp).unlink(missing_ok=True)
 
 
-def install(new_text: str, config: Path) -> bool:
-    """备份 + 原子替换。返回是否有变化；无变化不写盘、不备份。"""
+def install(new_text: str, config: Path) -> tuple[bool, Path | None]:
+    """备份 + 原子替换。返回 (是否有变化, 备份路径)；无变化不写盘、不备份。
+
+    已存在的文件保留原 mode（绝不放宽权限）；全新文件 0600。
+    """
     old = config.read_text(encoding="utf-8") if config.exists() else None
     if old == new_text:
-        return False
+        return False, None
+    mode = (config.stat().st_mode & 0o777) if old is not None else 0o600
+    backup = None
     if old is not None:
         ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        shutil.copy2(config, config.with_name(f"{config.name}.bak.{ts}-pull"))
+        backup = config.with_name(f"{config.name}.bak.{ts}-pull")
+        shutil.copy2(config, backup)
     fd, tmp = tempfile.mkstemp(dir=config.parent, prefix=f".{config.name}.", suffix=".new")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(new_text)
-        os.chmod(tmp, 0o644)
+        os.chmod(tmp, mode)
         os.replace(tmp, config)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
-    return True
+    return True, backup
+
+
+def restore(backup: Path, config: Path) -> None:
+    """激活失败时回滚磁盘配置（保留备份文件供排查）。"""
+    shutil.copy2(backup, config)
+
+
+def api_reload(cfg: dict, config: Path, timeout: int = 15) -> bool:
+    """经 external-controller `PUT /configs?force=true` 热加载；不可达 / 失败 → False（调用方兜底）。"""
+    bind = cfg.get("external-controller")
+    if not bind:
+        return False
+    req = urllib.request.Request(
+        f"http://{bind}/configs?force=true",
+        data=json.dumps({"path": str(config)}).encode(),
+        method="PUT",
+        headers={"Content-Type": "application/json"},
+    )
+    if cfg.get("secret"):
+        req.add_header("Authorization", f"Bearer {cfg['secret']}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return 200 <= resp.status < 300
+    except Exception:
+        return False
 
 
 def default_restart_cmd(exists=os.path.exists) -> list[str] | None:
-    """macOS brew services（root LaunchDaemon）优先，其次 systemd；都不认识 → None（只装不重启）。"""
+    """macOS brew services（root LaunchDaemon）优先，其次 systemd；都不认识 → None。"""
     if exists("/Library/LaunchDaemons/homebrew.mxcl.mihomo.plist"):
         return ["sudo", "-n", "brew", "services", "restart", "mihomo"]
     if exists("/etc/systemd/system/mihomo.service"):
@@ -151,9 +206,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--config", type=Path, default=None, help="目标配置（默认 <home>/config.yaml）")
     p.add_argument("--overlay", type=Path, default=None, help="本地覆盖 YAML，deep-merge 进订阅输出")
     p.add_argument("--env-file", type=Path, default=None, help="含 CONDUIT_SUB_URL 的 env 文件")
-    p.add_argument("--url", default=None, help="订阅 URL（secret；优先用 env 文件，别上命令行）")
     p.add_argument("--mihomo-bin", default=None, help="mihomo 二进制路径（默认自动探测）")
-    p.add_argument("--no-restart", action="store_true", help="只安装，不重启 mihomo")
+    p.add_argument("--no-restart", action="store_true", help="只安装，不激活 mihomo")
     p.add_argument("--restart-cmd", default=None, help="自定义重启命令（默认自动探测）")
     args = p.parse_args(argv)
 
@@ -168,24 +222,42 @@ def main(argv: list[str] | None = None) -> int:
         if overlay is not None and not isinstance(overlay, dict):
             raise PullError(f"overlay 必须是 YAML dict：{args.overlay}")
 
-    new_text = build_config(fetch(load_sub_url(args)), overlay)
+    cfg = build_config(fetch(load_sub_url(args.env_file)), overlay)
+    check_controller_safety(cfg)
+    new_text = dump_config(cfg)
     validate(mihomo_bin, args.home, new_text)
-    if not install(new_text, args.config):
-        print("配置无变化，跳过安装与重启")
+
+    # 激活方式在执行前确定：优先 controller reload，退回重启命令；
+    # 两者皆无且未显式 --no-restart → 不安装直接失败（避免磁盘态 / 运行态分叉）。
+    can_reload = bool(cfg.get("external-controller"))
+    restart_cmd = None if args.no_restart else (
+        shlex.split(args.restart_cmd) if args.restart_cmd else default_restart_cmd())
+    if not args.no_restart and not can_reload and restart_cmd is None:
+        raise PullError("无 controller 可 reload，也探测不到重启命令；"
+                        "确认激活方式或用 --no-restart 显式只安装")
+
+    changed, backup = install(new_text, args.config)
+    if not changed:
+        print("配置无变化，跳过安装与激活")
         return 0
     print(f"已安装 {args.config}")
 
     if args.no_restart:
-        print("--no-restart：跳过重启，记得手动 reload / restart mihomo")
+        print("--no-restart：跳过激活，记得手动 reload / restart mihomo")
         return 0
-    cmd = shlex.split(args.restart_cmd) if args.restart_cmd else default_restart_cmd()
-    if cmd is None:
-        print("未识别 init 系统，跳过重启，请手动重启 mihomo", file=sys.stderr)
+    if can_reload and api_reload(cfg, args.config):
+        print("已通过 controller API reload 生效")
         return 0
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if restart_cmd is None:
+        restore(backup, args.config)
+        raise PullError("controller reload 失败且无重启命令 —— 已回滚旧配置，请检查 mihomo 状态")
+    proc = subprocess.run(restart_cmd, capture_output=True, text=True)
     if proc.returncode != 0:
-        raise PullError(f"配置已安装但重启失败：{' '.join(cmd)}\n{(proc.stdout + proc.stderr).strip()}")
-    print(f"已重启 mihomo：{' '.join(cmd)}")
+        restore(backup, args.config)
+        subprocess.run(restart_cmd, capture_output=True, text=True)  # 尽力恢复原服务状态
+        raise PullError(f"重启失败，已回滚旧配置：{' '.join(restart_cmd)}\n"
+                        f"{(proc.stdout + proc.stderr).strip()}")
+    print(f"已重启 mihomo：{' '.join(restart_cmd)}")
     return 0
 
 
