@@ -65,6 +65,7 @@ def test_build_config_fail_closed_on_garbage():
 
 def test_controller_safety_matches_render_invariant():
     pull.check_controller_safety({"external-controller": "127.0.0.1:9090"})          # loopback 放行
+    pull.check_controller_safety({"external-controller": "[::1]:9090"})              # IPv6 loopback 放行
     pull.check_controller_safety({"external-controller": "0.0.0.0:9090", "secret": "s"})
     with pytest.raises(pull.PullError):  # 非 loopback 且无 secret → 拒绝（同 render.py）
         pull.check_controller_safety({"external-controller": "0.0.0.0:9090"})
@@ -253,6 +254,69 @@ def test_main_controller_block_change_forces_restart(tmp_path, monkeypatch):
     monkeypatch.setattr(pull.subprocess, "run", _run_ok)
     assert pull.main(_main_args(tmp_path)) == 0
     assert "external-controller" in cfg.read_text()
+
+
+def test_main_only_data_plane_change_allows_reload(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.yaml"
+    # 旧配置只换了一个节点名（纯数据面差异），其余与新配置一致
+    cfg.write_text(SUB_WITH_CONTROLLER.replace("n1", "n0"))
+    _stub_common(monkeypatch, SUB_WITH_CONTROLLER)
+    called = []
+    monkeypatch.setattr(pull, "api_reload", lambda c, p: called.append("reload") or True)
+
+    def no_run(*a, **k):
+        raise AssertionError("只有数据面变了应走 reload，不重启")
+
+    monkeypatch.setattr(pull.subprocess, "run", no_run)
+    assert pull.main(_main_args(tmp_path)) == 0
+    assert called == ["reload"]
+
+
+def test_main_non_data_plane_change_forces_restart(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.yaml"
+    # controller 一致但 dns 变了（非数据面）：denylist 枚举必然漏，必须走重启
+    cfg.write_text(SUB_WITH_CONTROLLER.replace("enable: true", "enable: false"))
+    _stub_common(monkeypatch, SUB_WITH_CONTROLLER)
+    monkeypatch.setattr(pull, "default_restart_cmd", lambda: ["fake-restart"])
+
+    def no_reload(c, p):
+        raise AssertionError("非数据面变了不该 reload")
+
+    monkeypatch.setattr(pull, "api_reload", no_reload)
+    monkeypatch.setattr(pull.subprocess, "run", _run_ok)
+    assert pull.main(_main_args(tmp_path)) == 0
+
+
+def test_api_reload_bypasses_system_proxy(monkeypatch):
+    """controller 请求携带 Bearer：必须走禁代理的独立 opener，防系统/环境代理截胡。"""
+    captured = {}
+
+    class FakeResp:
+        status = 204
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_build_opener(*handlers):
+        captured["handlers"] = handlers
+
+        class FakeOpener:
+            def open(self, req, timeout=0):
+                captured["auth"] = req.get_header("Authorization")
+                return FakeResp()
+
+        return FakeOpener()
+
+    monkeypatch.setattr(pull.urllib.request, "build_opener", fake_build_opener)
+    ok = pull.api_reload({"external-controller": "127.0.0.1:9090", "secret": "s"},
+                         pathlib.Path("/x/config.yaml"))
+    assert ok is True and captured["auth"] == "Bearer s"
+    proxies = [h for h in captured["handlers"]
+               if isinstance(h, pull.urllib.request.ProxyHandler)]
+    assert proxies and proxies[0].proxies == {}  # 显式空代理表 = 禁用一切代理探测
 
 
 def test_main_reload_failure_falls_back_to_restart(tmp_path, monkeypatch):

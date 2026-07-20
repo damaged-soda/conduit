@@ -15,10 +15,11 @@
 - 幂等：合并结果与现有配置一致时直接退出，不备份、不激活。
 - fail-closed：拉取 / 解析 / 校验任一步失败都不动现有配置；激活方式在执行前确定，
   激活失败原子回滚（首次安装则删掉新配置）。激活优先走 controller API reload
-  （不中断流量），但 mihomo 的 `PUT /configs` 不应用 controller 块（bind / secret /
-  CORS）变更 —— 仅当新旧配置的 controller 块完全一致时才允许 reload，否则必须重启；
-  无 controller 或 reload 失败时退回 brew services / systemctl 重启；都不可用则必须
-  显式 --no-restart。
+  （不中断流量，请求走禁代理的独立 opener，Bearer 不经系统代理），但 mihomo 的
+  `PUT /configs` 对监听类配置（controller 全家 / ui / secret / TUN / DoH 等）有
+  启动期才生效的成分 —— 仅当「非数据面键」（见 `_RELOAD_SAFE_KEYS`）新旧完全一致
+  时才允许 reload，否则必须重启；reload 失败退回 brew services / systemctl 重启；
+  都不可用则必须显式 --no-restart。
 - 权限：替换保留现有文件 mode；全新安装默认 0600（配置含节点凭据）。
 """
 
@@ -43,8 +44,11 @@ _HOME_CANDIDATES = ("/opt/homebrew/etc/mihomo", "/etc/mihomo")
 _MIHOMO_CANDIDATES = ("/opt/homebrew/opt/mihomo/bin/mihomo", "/usr/local/bin/mihomo")
 # 与 conduit/render.py 的 controller 不变量一致：非 loopback 绑定必须带 secret
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
-# mihomo 启动期才生效、reload 不应用的 API 监听相关键：这些键变了必须重启
-_CTRL_KEYS = ("external-controller", "external-controller-tls", "external-controller-cors", "secret")
+# 订阅刷新只会轮换的数据面键。reload 门槛用 allowlist 而非 denylist：
+# mihomo PUT /configs 对监听类配置（external-controller 全家 / ui / secret / TUN /
+# DoH 等）都有启动期才生效的成分，枚举「reload 不应用的键」必然漏；反转成
+# 「除数据面外其余键新旧一致」才允许 reload，否则必须重启。
+_RELOAD_SAFE_KEYS = {"proxies", "proxy-groups", "rules", "rule-providers"}
 
 
 class PullError(RuntimeError):
@@ -104,22 +108,22 @@ def check_controller_safety(cfg: dict) -> None:
         if not bind:
             continue
         host, _, _ = str(bind).rpartition(":")
-        if host not in _LOOPBACK and not cfg.get("secret"):
+        if host.strip("[]") not in _LOOPBACK and not cfg.get("secret"):
             raise PullError(f"{key} 绑定非 loopback({bind}) 但无 secret —— 拒绝安装")
 
 
-def _controller_block(cfg: dict) -> dict:
-    """启动期才生效的 API 监听相关键。新旧配置此块不一致时 reload 不可靠，必须重启。"""
-    return {k: cfg[k] for k in _CTRL_KEYS if cfg.get(k) is not None}
+def _non_data_plane(cfg: dict) -> dict:
+    """数据面（节点 / 分组 / 规则）以外的键。这些新旧一致时 reload 才可靠，见 _RELOAD_SAFE_KEYS。"""
+    return {k: v for k, v in cfg.items() if k not in _RELOAD_SAFE_KEYS}
 
 
-def _old_controller_block(config: Path) -> dict:
-    """读现有配置的 controller 块；不存在 / 解析不出 dict → 按「无」处理（保守走重启）。"""
+def _old_config_dict(config: Path) -> dict:
+    """读现有配置；不存在 / 解析不出 dict → 按 {} 处理（非数据面必不等，保守走重启）。"""
     try:
         old = yaml.safe_load(config.read_text(encoding="utf-8"))
     except Exception:
         return {}
-    return _controller_block(old) if isinstance(old, dict) else {}
+    return old if isinstance(old, dict) else {}
 
 
 def dump_config(cfg: dict) -> str:
@@ -186,8 +190,8 @@ def restore(backup: Path | None, config: Path) -> None:
 def api_reload(cfg: dict, config: Path, timeout: int = 15) -> bool:
     """经 external-controller `PUT /configs?force=true` 热加载；不可达 / 失败 → False（调用方兜底）。
 
-    调用方必须保证新旧配置的 controller 块一致（见 _controller_block），否则运行态
-    mihomo 的 bind / 凭据可能与本函数从「新配置」读出的一切都对不上。
+    调用方必须保证「非数据面键新旧一致」（见 _RELOAD_SAFE_KEYS）：否则运行态 mihomo
+    的监听配置与本函数从「新配置」读出的 bind / 凭据可能对不上，且部分变更 reload 不应用。
     """
     bind = cfg.get("external-controller")
     if not bind:
@@ -201,7 +205,9 @@ def api_reload(cfg: dict, config: Path, timeout: int = 15) -> bool:
     if cfg.get("secret"):
         req.add_header("Authorization", f"Bearer {cfg['secret']}")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        # 独立 opener 禁掉系统 / 环境代理：controller 请求携带 Bearer，绝不能被代理截胡
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=timeout) as resp:
             return 200 <= resp.status < 300
     except Exception:
         return False
@@ -272,17 +278,17 @@ def main(argv: list[str] | None = None) -> int:
     new_text = dump_config(cfg)
     validate(mihomo_bin, args.home, new_text)
 
-    # 激活方式在执行前确定。reload 只在「controller 块新旧一致」时可靠（bind / secret /
-    # CORS 启动期才生效，且运行态凭据来自旧配置）；否则必须拿到重启命令。
-    # 两者皆无且未显式 --no-restart → 不安装直接失败（避免磁盘态 / 运行态分叉）。
-    old_ctrl = _old_controller_block(args.config)
-    new_ctrl = _controller_block(cfg)
-    can_reload = bool(new_ctrl.get("external-controller")) and old_ctrl == new_ctrl
+    # 激活方式在执行前确定。reload 只在「非数据面键新旧一致」时可靠（监听类配置
+    # 启动期才生效、运行态凭据来自旧配置，denylist 枚举必然漏 → allowlist 反转）；
+    # 否则必须拿到重启命令。两者皆无且未显式 --no-restart → 不安装直接失败
+    # （避免磁盘态 / 运行态分叉）。
+    can_reload = bool(cfg.get("external-controller")) and (
+        _non_data_plane(_old_config_dict(args.config)) == _non_data_plane(cfg))
     restart_cmd = None if args.no_restart else (
         shlex.split(args.restart_cmd) if args.restart_cmd else default_restart_cmd())
     if not args.no_restart and not can_reload and restart_cmd is None:
-        raise PullError("controller 块有变化（或无 controller）且探测不到重启命令；"
-                        "确认激活方式或用 --no-restart 显式只安装")
+        raise PullError("非数据面配置有变化（或无 controller），reload 不可靠，且探测不到"
+                        "重启命令；确认激活方式或用 --no-restart 显式只安装")
 
     changed, backup = install(new_text, args.config)
     if not changed:
