@@ -7,14 +7,18 @@
     pull → deep-merge overlay → 安全检查 → mihomo -t → 备份 + 原子替换 → reload / 重启激活
 
 - 订阅 URL 是 secret：只从 env 文件（默认 `<home>/conduit.env`，建议 0600）里的
-  `CONDUIT_SUB_URL=...` 或同名环境变量读取；不进命令行参数，不出现在日志 / 错误信息里。
+  `CONDUIT_SUB_URL=...` 或同名环境变量读取；不进命令行参数，错误信息也不回显
+  （`raise ... from None`，异常链里不留含 token 的 cause）。
 - overlay 是普通 YAML dict，与订阅输出 deep-merge：dict 递归合并，list / 标量整体替换。
   示例见 examples/mihomo-pull-overlay.example.yaml。合并结果套用与 render.py 相同的安全
-  不变量：external-controller 绑非 loopback 且无 secret → 拒绝安装。
+  不变量：external-controller（含 TLS 监听）绑非 loopback 且无 secret → 拒绝安装。
 - 幂等：合并结果与现有配置一致时直接退出，不备份、不激活。
 - fail-closed：拉取 / 解析 / 校验任一步失败都不动现有配置；激活方式在执行前确定，
-  激活失败自动回滚旧配置。激活优先走 controller API reload（不中断流量），
-  无 controller 时退回 brew services / systemctl 重启；都不可用则必须显式 --no-restart。
+  激活失败原子回滚（首次安装则删掉新配置）。激活优先走 controller API reload
+  （不中断流量），但 mihomo 的 `PUT /configs` 不应用 controller 块（bind / secret /
+  CORS）变更 —— 仅当新旧配置的 controller 块完全一致时才允许 reload，否则必须重启；
+  无 controller 或 reload 失败时退回 brew services / systemctl 重启；都不可用则必须
+  显式 --no-restart。
 - 权限：替换保留现有文件 mode；全新安装默认 0600（配置含节点凭据）。
 """
 
@@ -39,6 +43,8 @@ _HOME_CANDIDATES = ("/opt/homebrew/etc/mihomo", "/etc/mihomo")
 _MIHOMO_CANDIDATES = ("/opt/homebrew/opt/mihomo/bin/mihomo", "/usr/local/bin/mihomo")
 # 与 conduit/render.py 的 controller 不变量一致：非 loopback 绑定必须带 secret
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+# mihomo 启动期才生效、reload 不应用的 API 监听相关键：这些键变了必须重启
+_CTRL_KEYS = ("external-controller", "external-controller-tls", "external-controller-cors", "secret")
 
 
 class PullError(RuntimeError):
@@ -70,15 +76,15 @@ def load_sub_url(env_file: Path) -> str:
 
 
 def fetch(url: str) -> str:
-    """错误信息只带异常类型 / HTTP 状态码，绝不回显 URL（含 token）。"""
+    """错误只带异常类型 / HTTP 状态码：URL 含 token，连异常 cause 都不保留。"""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "conduit-mihomo-pull"})
         with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT) as resp:
             return resp.read().decode("utf-8")
     except urllib.error.HTTPError as e:
-        raise PullError(f"拉取订阅失败：HTTP {e.code}") from e
+        raise PullError(f"拉取订阅失败：HTTP {e.code}") from None
     except Exception as e:
-        raise PullError(f"拉取订阅失败：{type(e).__name__}") from e
+        raise PullError(f"拉取订阅失败：{type(e).__name__}") from None
 
 
 def build_config(sub_text: str, overlay: dict | None) -> dict:
@@ -92,13 +98,28 @@ def build_config(sub_text: str, overlay: dict | None) -> dict:
 
 
 def check_controller_safety(cfg: dict) -> None:
-    """套用 render.py 的 controller 不变量，防 overlay 把 API 绑到非 loopback 裸奔。"""
-    bind = cfg.get("external-controller")
-    if not bind:
-        return
-    host, _, _ = str(bind).rpartition(":")
-    if host not in _LOOPBACK and not cfg.get("secret"):
-        raise PullError(f"external-controller 绑定非 loopback({bind}) 但无 secret —— 拒绝安装")
+    """套用 render.py 的 controller 不变量（含 TLS 监听），防 overlay 把 API 绑到非 loopback 裸奔。"""
+    for key in ("external-controller", "external-controller-tls"):
+        bind = cfg.get(key)
+        if not bind:
+            continue
+        host, _, _ = str(bind).rpartition(":")
+        if host not in _LOOPBACK and not cfg.get("secret"):
+            raise PullError(f"{key} 绑定非 loopback({bind}) 但无 secret —— 拒绝安装")
+
+
+def _controller_block(cfg: dict) -> dict:
+    """启动期才生效的 API 监听相关键。新旧配置此块不一致时 reload 不可靠，必须重启。"""
+    return {k: cfg[k] for k in _CTRL_KEYS if cfg.get(k) is not None}
+
+
+def _old_controller_block(config: Path) -> dict:
+    """读现有配置的 controller 块；不存在 / 解析不出 dict → 按「无」处理（保守走重启）。"""
+    try:
+        old = yaml.safe_load(config.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return _controller_block(old) if isinstance(old, dict) else {}
 
 
 def dump_config(cfg: dict) -> str:
@@ -146,13 +167,28 @@ def install(new_text: str, config: Path) -> tuple[bool, Path | None]:
     return True, backup
 
 
-def restore(backup: Path, config: Path) -> None:
-    """激活失败时回滚磁盘配置（保留备份文件供排查）。"""
-    shutil.copy2(backup, config)
+def restore(backup: Path | None, config: Path) -> None:
+    """激活失败时原子回滚磁盘状态（备份保留供排查）；首次安装无备份则删掉新配置。"""
+    if backup is None:
+        config.unlink(missing_ok=True)
+        return
+    fd, tmp = tempfile.mkstemp(dir=config.parent, prefix=f".{config.name}.", suffix=".rollback")
+    try:
+        with os.fdopen(fd, "wb") as dst, open(backup, "rb") as src:
+            shutil.copyfileobj(src, dst)
+        shutil.copystat(backup, tmp)
+        os.replace(tmp, config)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def api_reload(cfg: dict, config: Path, timeout: int = 15) -> bool:
-    """经 external-controller `PUT /configs?force=true` 热加载；不可达 / 失败 → False（调用方兜底）。"""
+    """经 external-controller `PUT /configs?force=true` 热加载；不可达 / 失败 → False（调用方兜底）。
+
+    调用方必须保证新旧配置的 controller 块一致（见 _controller_block），否则运行态
+    mihomo 的 bind / 凭据可能与本函数从「新配置」读出的一切都对不上。
+    """
     bind = cfg.get("external-controller")
     if not bind:
         return False
@@ -200,6 +236,15 @@ def _default_mihomo_bin() -> str:
     raise PullError("找不到 mihomo 二进制，用 --mihomo-bin 指定")
 
 
+def _run_restart(cmd: list[str]) -> tuple[bool, str]:
+    """返回 (成功与否, 输出)。进程不存在等 OSError 也算失败，由调用方回滚。"""
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        return proc.returncode == 0, (proc.stdout + proc.stderr).strip()
+    except OSError as e:
+        return False, type(e).__name__
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--home", type=Path, default=None, help="mihomo -d 目录（默认自动探测）")
@@ -212,7 +257,7 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     args.home = args.home or _default_home()
-    args.config = args.config or args.home / "config.yaml"
+    args.config = (args.config or args.home / "config.yaml").resolve()  # reload 需要绝对路径
     args.env_file = args.env_file or args.home / "conduit.env"
     mihomo_bin = args.mihomo_bin or _default_mihomo_bin()
 
@@ -227,13 +272,16 @@ def main(argv: list[str] | None = None) -> int:
     new_text = dump_config(cfg)
     validate(mihomo_bin, args.home, new_text)
 
-    # 激活方式在执行前确定：优先 controller reload，退回重启命令；
+    # 激活方式在执行前确定。reload 只在「controller 块新旧一致」时可靠（bind / secret /
+    # CORS 启动期才生效，且运行态凭据来自旧配置）；否则必须拿到重启命令。
     # 两者皆无且未显式 --no-restart → 不安装直接失败（避免磁盘态 / 运行态分叉）。
-    can_reload = bool(cfg.get("external-controller"))
+    old_ctrl = _old_controller_block(args.config)
+    new_ctrl = _controller_block(cfg)
+    can_reload = bool(new_ctrl.get("external-controller")) and old_ctrl == new_ctrl
     restart_cmd = None if args.no_restart else (
         shlex.split(args.restart_cmd) if args.restart_cmd else default_restart_cmd())
     if not args.no_restart and not can_reload and restart_cmd is None:
-        raise PullError("无 controller 可 reload，也探测不到重启命令；"
+        raise PullError("controller 块有变化（或无 controller）且探测不到重启命令；"
                         "确认激活方式或用 --no-restart 显式只安装")
 
     changed, backup = install(new_text, args.config)
@@ -248,17 +296,16 @@ def main(argv: list[str] | None = None) -> int:
     if can_reload and api_reload(cfg, args.config):
         print("已通过 controller API reload 生效")
         return 0
-    if restart_cmd is None:
+    if restart_cmd is not None:
+        ok, detail = _run_restart(restart_cmd)
+        if ok:
+            print(f"已重启 mihomo：{' '.join(restart_cmd)}")
+            return 0
         restore(backup, args.config)
-        raise PullError("controller reload 失败且无重启命令 —— 已回滚旧配置，请检查 mihomo 状态")
-    proc = subprocess.run(restart_cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        restore(backup, args.config)
-        subprocess.run(restart_cmd, capture_output=True, text=True)  # 尽力恢复原服务状态
-        raise PullError(f"重启失败，已回滚旧配置：{' '.join(restart_cmd)}\n"
-                        f"{(proc.stdout + proc.stderr).strip()}")
-    print(f"已重启 mihomo：{' '.join(restart_cmd)}")
-    return 0
+        _run_restart(restart_cmd)  # 尽力把服务恢复到旧配置对应的状态
+        raise PullError(f"重启失败，已回滚旧配置：{' '.join(restart_cmd)}\n{detail}")
+    restore(backup, args.config)
+    raise PullError("controller reload 失败且无重启命令 —— 已回滚旧配置，请检查 mihomo 状态")
 
 
 if __name__ == "__main__":

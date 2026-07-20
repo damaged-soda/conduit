@@ -1,7 +1,7 @@
 """conduit-mihomo-pull 测试：merge / 安全不变量 / 原子安装 / 激活编排的失败路径。
 
 不碰宿主机 mihomo（TESTING.md：宿主机神圣）——真实 fetch / validate / reload / 重启
-全部用 monkeypatch 替身，只断言编排语义：fail-closed、回滚、权限不放宽、URL 不外泄。
+全部用 monkeypatch 替身，只断言编排语义：fail-closed、原子回滚、权限不放宽、URL 不外泄。
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ import sys
 import urllib.error
 
 import pytest
-import yaml
 
 SCRIPT = pathlib.Path(__file__).parent.parent / "scripts" / "conduit-mihomo-pull.py"
 spec = importlib.util.spec_from_file_location("conduit_mihomo_pull", SCRIPT)
@@ -69,9 +68,12 @@ def test_controller_safety_matches_render_invariant():
     pull.check_controller_safety({"external-controller": "0.0.0.0:9090", "secret": "s"})
     with pytest.raises(pull.PullError):  # 非 loopback 且无 secret → 拒绝（同 render.py）
         pull.check_controller_safety({"external-controller": "0.0.0.0:9090"})
+    with pytest.raises(pull.PullError):  # TLS 监听同样受不变量约束
+        pull.check_controller_safety({"external-controller-tls": "0.0.0.0:9443"})
+    pull.check_controller_safety({"external-controller-tls": "0.0.0.0:9443", "secret": "s"})
 
 
-# ---------- fetch：URL 是 secret，不进错误信息 ----------
+# ---------- fetch：URL 是 secret，不进错误信息、不进异常链 ----------
 
 def test_fetch_error_never_contains_url(monkeypatch):
     secret = "https://rig.example.com/sub/clash?token=TOPSECRET&full=1"
@@ -88,7 +90,9 @@ def test_fetch_error_never_contains_url(monkeypatch):
     monkeypatch.setattr(pull.urllib.request, "urlopen", boom_value)
     with pytest.raises(pull.PullError) as e2:
         pull.fetch(secret)
-    assert "TOPSECRET" not in str(e1.value) and "TOPSECRET" not in str(e2.value)
+    for e in (e1.value, e2.value):
+        assert "TOPSECRET" not in str(e)
+        assert e.__suppress_context__  # raise from None：完整 traceback 也不带含 token 的 cause
 
 
 def test_no_url_flag():  # token 不该进进程参数：--url 不存在
@@ -96,7 +100,7 @@ def test_no_url_flag():  # token 不该进进程参数：--url 不存在
         pull.main(["--url", "https://x?token=t"])
 
 
-# ---------- install：原子替换 + 权限不放宽 ----------
+# ---------- install / restore：原子替换、权限不放宽、原子回滚 ----------
 
 def test_install_atomic_and_idempotent(tmp_path):
     cfg = tmp_path / "config.yaml"
@@ -121,7 +125,20 @@ def test_install_preserves_existing_mode(tmp_path):
     assert (cfg.stat().st_mode & 0o777) == 0o600  # 不得放宽已有权限
 
 
-# ---------- main 编排：fail-closed / 回滚 ----------
+def test_restore_atomic_and_fresh_install(tmp_path):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("old")
+    cfg.chmod(0o600)
+    _, backup = pull.install("new", cfg)
+    pull.restore(backup, cfg)
+    assert cfg.read_text() == "old" and (cfg.stat().st_mode & 0o777) == 0o600
+    assert backup.exists()  # 备份保留供排查
+
+    pull.restore(None, cfg)  # 首次安装无备份：回滚 = 删掉新配置，回到「无配置」
+    assert not cfg.exists()
+
+
+# ---------- main 编排：fail-closed / 回滚 / reload 门槛 ----------
 
 def _main_args(tmp_path):
     return ["--home", str(tmp_path), "--config", str(tmp_path / "config.yaml"),
@@ -132,6 +149,18 @@ def _stub_common(monkeypatch, sub=SUB):
     monkeypatch.setenv("CONDUIT_SUB_URL", "https://x/sub?token=t")
     monkeypatch.setattr(pull, "fetch", lambda url: sub)
     monkeypatch.setattr(pull, "validate", lambda *a: None)
+
+
+def _run_ok(*a, **k):
+    class R:
+        returncode, stdout, stderr = 0, "", ""
+    return R()
+
+
+def _run_fail(*a, **k):
+    class R:
+        returncode, stdout, stderr = 1, "", "boom"
+    return R()
 
 
 def test_main_validate_failure_keeps_config(tmp_path, monkeypatch):
@@ -152,7 +181,7 @@ def test_main_validate_failure_keeps_config(tmp_path, monkeypatch):
 def test_main_refuses_install_without_activation(tmp_path, monkeypatch):
     cfg = tmp_path / "config.yaml"
     cfg.write_text("old")
-    _stub_common(monkeypatch)  # SUB 无 controller
+    _stub_common(monkeypatch)  # SUB 无 controller → 不可能 reload
     monkeypatch.setattr(pull, "default_restart_cmd", lambda: None)
     with pytest.raises(pull.PullError):
         pull.main(_main_args(tmp_path))
@@ -164,38 +193,85 @@ def test_main_restart_failure_rolls_back(tmp_path, monkeypatch):
     cfg.write_text("old")
     _stub_common(monkeypatch)
     monkeypatch.setattr(pull, "default_restart_cmd", lambda: ["fake-restart"])
-
-    class R:
-        returncode, stdout, stderr = 1, "", "boom"
-
-    monkeypatch.setattr(pull.subprocess, "run", lambda *a, **k: R())
+    monkeypatch.setattr(pull.subprocess, "run", _run_fail)
     with pytest.raises(pull.PullError):
         pull.main(_main_args(tmp_path))
     assert cfg.read_text() == "old"  # 已回滚
     assert len(list(tmp_path.glob("*.bak.*-pull"))) == 1  # 备份保留供排查
 
 
-def test_main_api_reload_avoids_restart(tmp_path, monkeypatch):
+def test_main_restart_oserror_rolls_back(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("old")
+    _stub_common(monkeypatch)
+    monkeypatch.setattr(pull, "default_restart_cmd", lambda: ["nonexistent-cmd"])
+
+    def boom(*a, **k):
+        raise FileNotFoundError("nonexistent-cmd")
+
+    monkeypatch.setattr(pull.subprocess, "run", boom)
+    with pytest.raises(pull.PullError):
+        pull.main(_main_args(tmp_path))
+    assert cfg.read_text() == "old"
+
+
+def test_main_fresh_install_activation_failure_leaves_nothing(tmp_path, monkeypatch):
+    _stub_common(monkeypatch)  # 无旧配置（首次安装）
+    monkeypatch.setattr(pull, "default_restart_cmd", lambda: ["fake-restart"])
+    monkeypatch.setattr(pull.subprocess, "run", _run_fail)
+    with pytest.raises(pull.PullError):
+        pull.main(_main_args(tmp_path))
+    assert not (tmp_path / "config.yaml").exists()  # 不留半截新配置
+
+
+def test_main_api_reload_only_when_controller_block_unchanged(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.yaml"
+    # 旧配置 controller 块与新的一致（尾部注释让文本不同 → 仍会判为「有变化」并安装）
+    cfg.write_text(SUB_WITH_CONTROLLER + "# local touch\n")
     _stub_common(monkeypatch, SUB_WITH_CONTROLLER)
-    monkeypatch.setattr(pull, "api_reload", lambda cfg, path: True)
+    called = []
+    monkeypatch.setattr(pull, "api_reload", lambda c, p: called.append("reload") or True)
 
     def no_run(*a, **k):
-        raise AssertionError("reload 成功就不该走到重启")
+        raise AssertionError("controller 块一致时应走 reload，不重启")
 
     monkeypatch.setattr(pull.subprocess, "run", no_run)
     assert pull.main(_main_args(tmp_path)) == 0
-    out = yaml.safe_load((tmp_path / "config.yaml").read_text())
-    assert out["external-controller"] == "127.0.0.1:9090"
+    assert called == ["reload"]
+
+
+def test_main_controller_block_change_forces_restart(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(pull.dump_config(pull.build_config(SUB, None)))  # 旧：无 controller
+    _stub_common(monkeypatch, SUB_WITH_CONTROLLER)                  # 新：新增 controller
+    monkeypatch.setattr(pull, "default_restart_cmd", lambda: ["fake-restart"])
+
+    def no_reload(c, p):
+        raise AssertionError("controller 块变了不该 reload（运行态还是旧 bind/凭据）")
+
+    monkeypatch.setattr(pull, "api_reload", no_reload)
+    monkeypatch.setattr(pull.subprocess, "run", _run_ok)
+    assert pull.main(_main_args(tmp_path)) == 0
+    assert "external-controller" in cfg.read_text()
+
+
+def test_main_reload_failure_falls_back_to_restart(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(SUB_WITH_CONTROLLER + "# local touch\n")
+    _stub_common(monkeypatch, SUB_WITH_CONTROLLER)
+    monkeypatch.setattr(pull, "default_restart_cmd", lambda: ["fake-restart"])
+    monkeypatch.setattr(pull, "api_reload", lambda c, p: False)  # reload 不可达
+    ran = []
+    monkeypatch.setattr(pull.subprocess, "run",
+                        lambda *a, **k: ran.append(a[0]) or _run_ok())
+    assert pull.main(_main_args(tmp_path)) == 0
+    assert ran == [["fake-restart"]]  # reload 失败兜底重启成功
 
 
 def test_main_restart_success(tmp_path, monkeypatch):
     _stub_common(monkeypatch)
     monkeypatch.setattr(pull, "default_restart_cmd", lambda: ["fake-restart"])
-
-    class R:
-        returncode, stdout, stderr = 0, "", ""
-
-    monkeypatch.setattr(pull.subprocess, "run", lambda *a, **k: R())
+    monkeypatch.setattr(pull.subprocess, "run", _run_ok)
     assert pull.main(_main_args(tmp_path)) == 0
     assert "n1" in (tmp_path / "config.yaml").read_text()
 
