@@ -1,16 +1,22 @@
 # conduit-service：本文件即生产接线（personal 域架构规范「接线即默认值」，
 # 2026-08-10 裁决）——dev 与生产同一份，默认值可直接上生产：
-#   生产 / rig：docker compose -f deploy/compose.yaml up -d
-#              （发布特定版本：CONDUIT_IMAGE_TAG=vX.Y.Z 部署时注入并先 pull）
+#   生产 / rig：docker compose -f deploy/compose.yaml pull && docker compose -f deploy/compose.yaml up -d
+#              （发布特定版本：CONDUIT_IMAGE_TAG=vX.Y.Z 对 pull 与 up 两条命令同时注入，不写 .env）
 #   本地开发：  docker compose -f deploy/compose.yaml up -d --build
+# 迁移状态：conduit 切到新部署面之前，rig 生产仍由 fleet-deploy（pin → bump → sync）
+# 执行，本文件届时接管（过渡态见 ~/work/personal/AGENTS.md「过渡状态」节）。
 # tailnet 暴露不在本文件内：宿主 Tailscale Serve 承担（svc:conduit → 127.0.0.1:8000）。
 name: conduit-service
 
 services:
   conduit:
-    # 默认预构建公开镜像（`docker compose pull` 零认证拉，不在目标机上 build）。
-    image: ghcr.io/damaged-soda/conduit:${CONDUIT_IMAGE_TAG:-latest}
-    # 本地开发可 `up -d --build` 现构建（会以上面的 image 名打 tag）。
+    # 默认跟踪 release——随 v* tag 移动的「已发布」指针（CI tag 语义见
+    # .github/workflows/build-image.yml）；latest 是每个 main commit 的开发态，
+    # 不作生产默认。公开包零认证拉。
+    image: ghcr.io/damaged-soda/conduit:${CONDUIT_IMAGE_TAG:-release}
+    # 生产永远拉取、拉不到即终止，不回退本机构建（image-pull fail-loud 语义）；
+    # 本地开发用 `up -d --build` 显式覆盖为现构建（会以上面的 image 名打 tag）。
+    pull_policy: always
     build:
       context: ..
       dockerfile: deploy/Dockerfile

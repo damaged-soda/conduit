@@ -4,12 +4,12 @@
 
 ## 跑
 
-**Docker（standalone / 手动 compose，拉公开镜像）**：只要一份 `deploy/compose.yaml`（不需源码）：
+**Docker（拉公开镜像）**：只要一份 `deploy/compose.yaml`（不需源码）：
 ```
-CONDUIT_BIND=<rig 私有网 IP> docker compose -f deploy/compose.yaml pull
-CONDUIT_BIND=<rig 私有网 IP> docker compose -f deploy/compose.yaml up -d
+docker compose -f deploy/compose.yaml pull
+docker compose -f deploy/compose.yaml up -d
 ```
-镜像由 GitHub Actions 在 push main / 打 `v*` tag 时自动 build 推到 `ghcr.io/damaged-soda/conduit`（公开包，零认证拉）。内置 compose 默认跟踪 `latest`，生产 rig 的目标态由 `fleet-deploy` 仓 pin 具体 `v*` tag。DB 落命名卷 `conduit-data`（含凭据，留 rig 磁盘）。默认只绑宿主 `127.0.0.1:8000`；上 tailnet 用 `CONDUIT_BIND` 绑私有网 IP（之后 `rig:8000` 可达）或 `tailscale serve`。**别绑 0.0.0.0**（暂无认证）。
+镜像由 GitHub Actions 在 push main / 打 `v*` tag 时自动 build 推到 `ghcr.io/damaged-soda/conduit`（公开包，零认证拉）。compose 默认跟踪 `release`（随 `v*` tag 移动的已发布指针）；部署特定版本用 `CONDUIT_IMAGE_TAG=vX.Y.Z` 对 `pull` 与 `up` 两条命令同时注入。迁移状态：conduit 切到新部署面之前，rig 生产仍由 `fleet-deploy` 仓（pin → bump → sync）执行（过渡态）。DB 落命名卷 `conduit-data`（含凭据，留 rig 磁盘）。默认只绑宿主 `127.0.0.1:8000`；tailnet 暴露走宿主 `tailscale serve`（`svc:conduit`）。**别绑 0.0.0.0**（暂无认证）。
 
 **本地开发（现构建）**：`docker compose -f deploy/compose.yaml up -d --build`。
 
