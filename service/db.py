@@ -384,7 +384,7 @@ class Store:
         return dict(row) if row else None
 
     def latest_import_raw(self, sub_id: str) -> str | None:
-        """返回最近一次成功导入的原文，供订阅详情编辑；不要用于列表接口。"""
+        """返回最近一次成功导入的原文，供订阅详情编辑；不要用于列表或已持锁路径。"""
         with self._lock:
             row = self._conn.execute(
                 "SELECT raw FROM imports WHERE sub_id = ? ORDER BY id DESC LIMIT 1",
@@ -458,7 +458,7 @@ class Store:
         source_type: str = "file",
         proxy_server_nameservers: list[str] | None = None,
     ) -> int:
-        """记录一次导入，并用上游原序原子替换该订阅的完整节点快照。"""
+        """记录一次导入，并用上游原序原子替换完整快照；手动导入同时切换为文件来源。"""
         source_type = _check_source_type(source_type)
         proxy_server_nameservers = list(proxy_server_nameservers or [])
         with self._lock:
@@ -498,6 +498,12 @@ class Store:
                     "UPDATE subscriptions SET proxy_server_nameservers = ? WHERE id = ?",
                     (json.dumps(proxy_server_nameservers, ensure_ascii=False), sub_id),
                 )
+                if source_type == "file":
+                    # 手动导入成功才解除 URL 来源；解析或事务失败时 URL 与旧快照都保持不变。
+                    self._conn.execute(
+                        "UPDATE subscriptions SET source_type = 'file', url = NULL WHERE id = ?",
+                        (sub_id,),
+                    )
                 self._conn.commit()
             except Exception:
                 self._conn.rollback()  # 整批导入原子化：中途失败不留半成品

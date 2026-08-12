@@ -115,6 +115,7 @@ def test_page_prefills_current_source_for_editing():
     assert "raw.value=sub.raw||''" in page
     assert "当前订阅内容：" in page
     assert "保存内容并导入" in page
+    assert "saveBtn.hidden=mode!=='url'" in page
 
 
 def test_import_into_subscription_and_detail_nodes():
@@ -194,6 +195,7 @@ def test_refresh_fetches_url_and_imports():
     assert c.post(f"/api/subscriptions/{sid}/refresh").json()["imported"] == 2
     sub = c.get("/api/subscriptions").json()[0]
     assert sub["source_type"] == "url" and sub["has_url"] == 1 and "url" not in sub
+    assert c.get(f"/api/subscriptions/{sid}").json()["raw"] == FIXTURE
 
 
 def test_refresh_preserves_nodes_without_udp_support():
@@ -231,12 +233,26 @@ def test_patch_can_clear_url():
     assert detail["source_type"] == "file"
 
 
-def test_url_source_rejects_file_import():
+def test_manual_import_atomically_replaces_url_source():
     c = _client()
     sid = _mksub(c, "v", "https://e/sub")
-    r = c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
-    assert r.status_code == 400
-    assert "链接来源" in r.json()["detail"]
+    assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE}).json()["imported"] == 2
+    detail = c.get(f"/api/subscriptions/{sid}").json()
+    assert detail["source_type"] == "file"
+    assert detail["url"] is None and detail["raw"] == FIXTURE
+
+
+def test_failed_manual_import_preserves_url_source_and_snapshot():
+    c = TestClient(create_app(":memory:", fetcher=lambda url: FIXTURE))
+    url = "https://e/sub?token=secret"
+    sid = _mksub(c, "v", url)
+    assert c.post(f"/api/subscriptions/{sid}/refresh").status_code == 200
+
+    assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": "proxies: ["}).status_code == 400
+    detail = c.get(f"/api/subscriptions/{sid}").json()
+    assert detail["source_type"] == "url"
+    assert detail["url"] == url and detail["raw"] == FIXTURE
+    assert len(c.get(f"/api/subscriptions/{sid}/nodes").json()) == 2
 
 
 def test_clearing_url_switches_back_to_file_import():

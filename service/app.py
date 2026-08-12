@@ -299,8 +299,6 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
     @app.post("/api/subscriptions/{sub_id}/import")
     def import_subscription(sub_id: str, body: ImportIn):
         sub = _require(sub_id)
-        if sub.get("source_type") == "url" or sub.get("url"):
-            raise HTTPException(400, "链接来源订阅请用 URL 刷新；如需文件导入，先清空 URL")
         return _normalize_and_store(store, sub, body.raw, "file")
 
     @app.post("/api/subscriptions/{sub_id}/refresh")
@@ -718,7 +716,6 @@ async function renderDetail(){
       if(!clean)throw new Error('请输入订阅 URL');
       body.url=clean;
     }else{
-      body.url=null;
       MANUAL_MODE[SEL]=mode;
     }
     await j(`/api/subscriptions/${SEL}`,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
@@ -737,6 +734,7 @@ async function renderDetail(){
   const sourceBox=document.createElement('div');
   function renderSourceControls(){
     sourceBox.replaceChildren();
+    saveBtn.hidden=mode!=='url';
     if(mode==='url')sourceBox.append(row(el('label','URL：'),url),row(refreshBtn));
     else if(mode==='file')sourceBox.append(row(el('label','文件：'),file),row(importFileBtn));
     else sourceBox.append(el('div','当前订阅内容：'),raw,row(importTextBtn));
