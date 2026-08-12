@@ -56,9 +56,9 @@ clash-verge/mihomo。
   上游原序”；默认 `AUTO-FAST` 仍跨全部节点按延迟选优。拖动后服务端产物立即变化，客户端刷新订阅后生效。
 - `GET /api/sub-token`（+ 页面显示可复制 URL）；token 保护节点凭据，DB `--no-access-log`
 
-**部署侧 mesh DNS 输入**（非 secret，不进 DB）：如调用方有私有 mesh / MagicDNS，可设
-`CONDUIT_MESH_DOMAIN_SUFFIXES=ts.net`；full 模式需要专用解析器时再设
-`CONDUIT_MESH_DNS_SERVER=100.100.100.100`。这些值会运行时合入 policy：生成 DIRECT 规则、
+**部署侧 mesh DNS 输入**（非 secret，不进 DB）：`deploy/compose.yaml` 默认注入 Tailscale 通用常量
+`CONDUIT_MESH_DOMAIN_SUFFIXES=ts.net` 和 `CONDUIT_MESH_DNS_SERVER=100.100.100.100`，可用同名环境
+变量覆盖；裸跑或其他部署方式按实际 mesh 需要设置。这些值会运行时合入 policy：生成 DIRECT 规则、
 fake-ip 放行和 `nameserver-policy`，包括已有自定义 policy 的场景。conduit 不内置具体 tailnet 名。
 
 存储：`service/db.py`（SQLite）：`subscriptions(position, source_type=file|url)` / `imports` /
