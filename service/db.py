@@ -457,8 +457,10 @@ class Store:
         nodes: list[Node],
         source_type: str = "file",
         proxy_server_nameservers: list[str] | None = None,
+        *,
+        detach_url: bool = False,
     ) -> int:
-        """记录一次导入，并用上游原序原子替换完整快照；手动导入同时切换为文件来源。"""
+        """记录一次导入并原子替换完整快照；detach_url 显式解除 URL 来源。"""
         source_type = _check_source_type(source_type)
         proxy_server_nameservers = list(proxy_server_nameservers or [])
         with self._lock:
@@ -498,7 +500,7 @@ class Store:
                     "UPDATE subscriptions SET proxy_server_nameservers = ? WHERE id = ?",
                     (json.dumps(proxy_server_nameservers, ensure_ascii=False), sub_id),
                 )
-                if source_type == "file":
+                if detach_url:
                     # 手动导入成功才解除 URL 来源；解析或事务失败时 URL 与旧快照都保持不变。
                     self._conn.execute(
                         "UPDATE subscriptions SET source_type = 'file', url = NULL WHERE id = ?",

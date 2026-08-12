@@ -115,7 +115,8 @@ def test_page_prefills_current_source_for_editing():
     assert "raw.value=sub.raw||''" in page
     assert "当前订阅内容：" in page
     assert "保存内容并导入" in page
-    assert "saveBtn.hidden=mode!=='url'" in page
+    assert "保存订阅信息" in page
+    assert "detach_url:isUrl" in page and "保存后将解除 URL" in page
 
 
 def test_import_into_subscription_and_detail_nodes():
@@ -236,7 +237,12 @@ def test_patch_can_clear_url():
 def test_manual_import_atomically_replaces_url_source():
     c = _client()
     sid = _mksub(c, "v", "https://e/sub")
-    assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE}).json()["imported"] == 2
+    without_confirmation = c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    assert without_confirmation.status_code == 400
+    assert c.get(f"/api/subscriptions/{sid}").json()["url"] == "https://e/sub"
+
+    body = {"raw": FIXTURE, "detach_url": True}
+    assert c.post(f"/api/subscriptions/{sid}/import", json=body).json()["imported"] == 2
     detail = c.get(f"/api/subscriptions/{sid}").json()
     assert detail["source_type"] == "file"
     assert detail["url"] is None and detail["raw"] == FIXTURE
@@ -248,7 +254,8 @@ def test_failed_manual_import_preserves_url_source_and_snapshot():
     sid = _mksub(c, "v", url)
     assert c.post(f"/api/subscriptions/{sid}/refresh").status_code == 200
 
-    assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": "proxies: ["}).status_code == 400
+    bad = {"raw": "proxies: [", "detach_url": True}
+    assert c.post(f"/api/subscriptions/{sid}/import", json=bad).status_code == 400
     detail = c.get(f"/api/subscriptions/{sid}").json()
     assert detail["source_type"] == "url"
     assert detail["url"] == url and detail["raw"] == FIXTURE

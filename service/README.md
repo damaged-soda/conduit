@@ -29,9 +29,9 @@ clash-verge/mihomo。
   `source_type`/`has_url`）、`PUT /api/subscriptions/order`（完整 id 列表原子换序）、
   `GET/PATCH /api/subscriptions/{id}`（管理页编辑用；详情回显 URL 与最近一次成功导入的完整 `raw`，
   二者均为 secret，后者含节点凭据；不出现在列表 / 节点接口）、
-  `POST /api/subscriptions/{id}/import`（手动来源导入）、
+  `POST /api/subscriptions/{id}/import`（手动来源导入；URL 来源须显式传 `detach_url=true`）、
   `POST /api/subscriptions/{id}/refresh`（URL 来源拉取）
-- 来源模型：`subscriptions.source_type` 为 `file|url`，当前来源二选一；`url` 来源必须有 URL 并通过刷新更新，`file` 来源无 URL 并通过手动导入更新。页面里的文件 / 文本只是手动导入的两种输入方式；订阅详情会把最近一次成功导入的原文带入文本编辑器。对 URL 来源手动导入时，解析和写库成功后才在同一事务内切换为 `file`；失败则保留 URL 与旧快照。`imports` 只记录每次 raw 快照及其来源类型，不代表第二个活动来源。
+- 来源模型：`subscriptions.source_type` 为 `file|url`，当前来源二选一；`url` 来源必须有 URL 并通过刷新更新，`file` 来源无 URL 并通过手动导入更新。页面里的文件 / 文本只是手动导入的两种输入方式；订阅详情会把最近一次成功导入的原文带入文本编辑器。对 URL 来源手动导入时，页面会确认解除 URL，API 也要求显式 opt-in；解析和写库成功后才在同一事务内切换为 `file`，失败则保留 URL 与旧快照。`imports` 只记录每次 raw 快照及其来源类型，不代表第二个活动来源。
 - 导入格式：Clash/Mihomo YAML、URI 行订阅（ss/vmess/trojan/vless/hysteria/hysteria2）、整份
   base64 包裹的 URI/YAML；每次成功导入是该订阅的完整节点快照，保留上游原序并移除已消失节点；
   导入失败则保留旧快照。订阅渲染只输出支持 UDP 的代理节点。
