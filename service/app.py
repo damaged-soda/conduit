@@ -52,6 +52,7 @@ class SubOrderIn(BaseModel):
 
 class ImportIn(BaseModel):
     raw: str
+    detach_url: bool = False
 
 
 class TagIn(BaseModel):
@@ -189,7 +190,9 @@ def _with_mesh_bypass(policy: dict) -> dict:
     return out
 
 
-def _normalize_and_store(store: Store, sub: dict, raw: str, source_type: str) -> dict:
+def _normalize_and_store(
+    store: Store, sub: dict, raw: str, source_type: str, *, detach_url: bool = False
+) -> dict:
     try:
         nodes = normalize(raw, sub["type"], sub["id"])
         proxy_server_nameservers = extract_proxy_server_nameservers(raw, sub["type"])
@@ -197,7 +200,8 @@ def _normalize_and_store(store: Store, sub: dict, raw: str, source_type: str) ->
         raise HTTPException(400, "导入内容解析失败（请确认是合法的 clash/URI/base64 订阅）")
     return {
         "imported": store.import_nodes(
-            sub["id"], raw, nodes, source_type, proxy_server_nameservers
+            sub["id"], raw, nodes, source_type, proxy_server_nameservers,
+            detach_url=detach_url,
         )
     }
 
@@ -256,6 +260,7 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
             "created_at": sub["created_at"],
             "url": sub.get("url"),
             "has_url": bool(sub.get("url")),
+            "raw": store.latest_import_raw(sub_id),
             "node_count": len(store.list_nodes(sub_id)),
         }
 
@@ -298,9 +303,11 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
     @app.post("/api/subscriptions/{sub_id}/import")
     def import_subscription(sub_id: str, body: ImportIn):
         sub = _require(sub_id)
-        if sub.get("source_type") == "url" or sub.get("url"):
-            raise HTTPException(400, "链接来源订阅请用 URL 刷新；如需文件导入，先清空 URL")
-        return _normalize_and_store(store, sub, body.raw, "file")
+        if (sub.get("source_type") == "url" or sub.get("url")) and not body.detach_url:
+            raise HTTPException(400, "链接来源改为手动来源需要明确确认")
+        return _normalize_and_store(
+            store, sub, body.raw, "file", detach_url=body.detach_url
+        )
 
     @app.post("/api/subscriptions/{sub_id}/refresh")
     def refresh_subscription(sub_id: str):
@@ -706,9 +713,10 @@ async function renderDetail(){
   const url=input('订阅 URL（http/https）',sub.url||'');
   const file=fileInput();
   const raw=document.createElement('textarea');raw.placeholder='把 clash YAML / URI / base64 订阅内容贴这里';
+  raw.value=sub.raw||'';
   const msg=el('span','');msg.className='msg';msg.id='msg';
   const isUrl=sub.source_type==='url';
-  let mode=isUrl?'url':(MANUAL_MODE[sub.id]||'file');
+  let mode=isUrl?'url':(MANUAL_MODE[sub.id]||(sub.raw?'text':'file'));
   async function saveSource(){
     const body={name:name.value};
     if(mode==='url'){
@@ -716,28 +724,28 @@ async function renderDetail(){
       if(!clean)throw new Error('请输入订阅 URL');
       body.url=clean;
     }else{
-      body.url=null;
       MANUAL_MODE[SEL]=mode;
     }
     await j(`/api/subscriptions/${SEL}`,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
     await loadSubs();
   }
   async function importManual(rawText){
+    if(isUrl&&!confirm('该订阅当前是链接来源；保存后将解除 URL，改为手动维护。继续吗？'))return;
     await saveSource();
-    const r=await jpost(`/api/subscriptions/${SEL}/import`,{raw:rawText});
+    const r=await jpost(`/api/subscriptions/${SEL}/import`,{raw:rawText,detach_url:isUrl});
     await select(SEL);setMsg('导入 '+r.imported+' 节点');
   }
   const refreshBtn=btn('🔄 保存并按 URL 刷新',async()=>{try{await saveSource();const r=await jpost(`/api/subscriptions/${SEL}/refresh`);await select(SEL);setMsg('刷新：导入 '+r.imported+' 节点')}catch(e){setMsg('刷新失败: '+e.message)}});
   const deleteBtn=btn('🗑 删除订阅',async()=>{if(confirm('删除该订阅及其节点？')){await j(`/api/subscriptions/${SEL}`,{method:'DELETE'});delete MANUAL_MODE[SEL];SEL=null;await loadSubs();document.getElementById('detail').replaceChildren(el('p','已删除。'))}});
-  const importFileBtn=btn('导入文件',async()=>{try{await importManual(await selectedFileText(file))}catch(e){setMsg('导入失败: '+e.message)}});
-  const importTextBtn=btn('导入文本',async()=>{try{if(!raw.value.trim())throw new Error('请输入订阅内容');await importManual(raw.value)}catch(e){setMsg('导入失败: '+e.message)}});
-  const saveBtn=btn('保存',async()=>{try{await saveSource();await renderDetail();setMsg('已保存')}catch(e){setMsg('保存失败: '+e.message)}});
+  const importFileBtn=btn('从文件替换',async()=>{try{await importManual(await selectedFileText(file))}catch(e){setMsg('导入失败: '+e.message)}});
+  const importTextBtn=btn('保存内容并导入',async()=>{try{if(!raw.value.trim())throw new Error('请输入订阅内容');await importManual(raw.value)}catch(e){setMsg('导入失败: '+e.message)}});
+  const saveBtn=btn('保存订阅信息',async()=>{try{await saveSource();if(mode==='url')await renderDetail();setMsg('已保存')}catch(e){setMsg('保存失败: '+e.message)}});
   const sourceBox=document.createElement('div');
   function renderSourceControls(){
     sourceBox.replaceChildren();
     if(mode==='url')sourceBox.append(row(el('label','URL：'),url),row(refreshBtn));
     else if(mode==='file')sourceBox.append(row(el('label','文件：'),file),row(importFileBtn));
-    else sourceBox.append(el('div','文本导入：'),raw,row(importTextBtn));
+    else sourceBox.append(el('div','当前订阅内容：'),raw,row(importTextBtn));
   }
   renderSourceControls();
 

@@ -87,7 +87,36 @@ def test_subscription_detail_returns_url_for_editor_only():
     assert detail["url"] == "https://example/sub" and detail["has_url"] is True
     assert detail["source_type"] == "url"
     listed = c.get("/api/subscriptions").json()[0]
-    assert "url" not in listed  # 列表仍不回显 secret URL
+    assert "url" not in listed and "raw" not in listed  # 列表仍不回显 secret 来源
+
+
+def test_subscription_detail_returns_latest_raw_for_editor_only():
+    c = _client()
+    sid = _mksub(c)
+    assert c.get(f"/api/subscriptions/{sid}").json()["raw"] is None
+
+    first = FIXTURE
+    edited = FIXTURE.replace("US1.Example.com", "18.141.91.129")
+    assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": first}).status_code == 200
+    assert c.get(f"/api/subscriptions/{sid}").json()["raw"] == first
+
+    assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": edited}).status_code == 200
+    detail = c.get(f"/api/subscriptions/{sid}").json()
+    assert detail["raw"] == edited
+    assert "18.141.91.129" in {n["server"] for n in c.get(f"/api/subscriptions/{sid}/nodes").json()}
+    assert "raw" not in c.get("/api/subscriptions").json()[0]
+
+    assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": "proxies: ["}).status_code == 400
+    assert c.get(f"/api/subscriptions/{sid}").json()["raw"] == edited
+
+
+def test_page_prefills_current_source_for_editing():
+    page = _client().get("/").text
+    assert "raw.value=sub.raw||''" in page
+    assert "当前订阅内容：" in page
+    assert "保存内容并导入" in page
+    assert "保存订阅信息" in page
+    assert "detach_url:isUrl" in page and "保存后将解除 URL" in page
 
 
 def test_import_into_subscription_and_detail_nodes():
@@ -167,6 +196,7 @@ def test_refresh_fetches_url_and_imports():
     assert c.post(f"/api/subscriptions/{sid}/refresh").json()["imported"] == 2
     sub = c.get("/api/subscriptions").json()[0]
     assert sub["source_type"] == "url" and sub["has_url"] == 1 and "url" not in sub
+    assert c.get(f"/api/subscriptions/{sid}").json()["raw"] == FIXTURE
 
 
 def test_refresh_preserves_nodes_without_udp_support():
@@ -204,12 +234,32 @@ def test_patch_can_clear_url():
     assert detail["source_type"] == "file"
 
 
-def test_url_source_rejects_file_import():
+def test_manual_import_atomically_replaces_url_source():
     c = _client()
     sid = _mksub(c, "v", "https://e/sub")
-    r = c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
-    assert r.status_code == 400
-    assert "链接来源" in r.json()["detail"]
+    without_confirmation = c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    assert without_confirmation.status_code == 400
+    assert c.get(f"/api/subscriptions/{sid}").json()["url"] == "https://e/sub"
+
+    body = {"raw": FIXTURE, "detach_url": True}
+    assert c.post(f"/api/subscriptions/{sid}/import", json=body).json()["imported"] == 2
+    detail = c.get(f"/api/subscriptions/{sid}").json()
+    assert detail["source_type"] == "file"
+    assert detail["url"] is None and detail["raw"] == FIXTURE
+
+
+def test_failed_manual_import_preserves_url_source_and_snapshot():
+    c = TestClient(create_app(":memory:", fetcher=lambda url: FIXTURE))
+    url = "https://e/sub?token=secret"
+    sid = _mksub(c, "v", url)
+    assert c.post(f"/api/subscriptions/{sid}/refresh").status_code == 200
+
+    bad = {"raw": "proxies: [", "detach_url": True}
+    assert c.post(f"/api/subscriptions/{sid}/import", json=bad).status_code == 400
+    detail = c.get(f"/api/subscriptions/{sid}").json()
+    assert detail["source_type"] == "url"
+    assert detail["url"] == url and detail["raw"] == FIXTURE
+    assert len(c.get(f"/api/subscriptions/{sid}/nodes").json()) == 2
 
 
 def test_clearing_url_switches_back_to_file_import():
@@ -451,7 +501,7 @@ def test_sub_clash_full_has_dns_and_tun():
     assert cfg["dns"]["enhanced-mode"] == "fake-ip" and cfg["tun"]["enable"] is True
 
 
-def test_sub_clash_full_compiles_source_dns_policy_without_exposing_doh():
+def test_sub_clash_full_compiles_source_dns_policy_and_only_exposes_doh_in_editor():
     c = _client()
     custom = _mksub(c, "Custom DNS")
     ordinary = _mksub(c, "Ordinary")
@@ -475,7 +525,8 @@ def test_sub_clash_full_compiles_source_dns_policy_without_exposing_doh():
     assert c.post(f"/api/subscriptions/{custom}/import", json={"raw": custom_raw}).status_code == 200
     assert c.post(f"/api/subscriptions/{ordinary}/import", json={"raw": ordinary_raw}).status_code == 200
     assert doh not in c.get("/api/subscriptions").text
-    assert doh not in c.get(f"/api/subscriptions/{custom}").text
+    assert c.get(f"/api/subscriptions/{custom}").json()["raw"] == custom_raw
+    assert doh not in c.get(f"/api/subscriptions/{custom}/nodes").text
 
     token = c.get("/api/sub-token").json()["token"]
     pure = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
@@ -735,5 +786,5 @@ def test_index_page():
     r = _client().get("/")
     assert r.status_code == 200
     assert 'id="meta"' in r.text
-    assert "SOURCE_MODES" in r.text and "导入文本" in r.text
+    assert "SOURCE_MODES" in r.text and "保存内容并导入" in r.text
     assert "保存名字" not in r.text and "保存 URL" not in r.text
