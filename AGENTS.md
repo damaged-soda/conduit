@@ -5,8 +5,9 @@
 ## 改动走 PR
 - 任何改动开新分支（ASCII kebab，如 `feat/...` / `chore/...`）→ push → `gh pr create` 提 review + merge。
 - 不直接提交到 `main`（首次 bootstrap 骨架除外）。
-- Codex 常在临时 worktree / detached HEAD 里干活；如果 `main` 已被 `/Users/leavan/work/conduit` 这类主 worktree 占用，不要强切，合并后在主 worktree `git pull --ff-only`，当前 worktree detach 到 `origin/main` 再删本地分支。
-- 合并后删远端/本地 feature 分支，保持开局干净。
+- Codex 常在临时 worktree / detached HEAD 里干活；如果 `main` 已被 `/Users/leavan/work/conduit` 这类主 worktree 占用，不要强切，合并后在主 worktree `git pull --ff-only`，当前 worktree detach 到 `origin/main`；本地/远端分支的清理按下一条授权规则。
+- 合并后如用户明确授权删除，再清理远端/本地 feature 分支；仅确认“已合并”不构成删除分支或
+  worktree 的授权。未获授权时保留现场，但仍抓取远端并把本地默认分支安全快进到远端。
 
 ## 发布 tag
 - 合并到 `main` 后，如本次变更需要触发发布镜像/留 release 点，打 annotated tag：`git tag -a vX.Y.Z -m "conduit vX.Y.Z" <merge-commit>` → `git push origin vX.Y.Z`。

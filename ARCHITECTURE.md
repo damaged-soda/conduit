@@ -19,7 +19,10 @@ conduit 通过**读外部文件**接收调用方的现状（不硬编码、不�
 
 - **分层**：`conduit-core`（纯函数库，拓扑/存储无关，golden 守着）↑被驱动↑ `conduit-service`（有状态：DB + 管理 API + 简单页面 + 定时器 + 监控栈）。核心逻辑不随存储/服务变。
 - **服务跑 rig**：有状态控制面都在 rig（资源头、把工作面留干净）。**macmini 保持瘦**——人/agent 中枢 + 跑 mihomo（数据面消费者），不背控制面状态（自举困难，故 macmini 少状态）。
-- **摄入来源二选一**：文件来源由人在别处下好、导进服务；URL 来源由服务存 URL 并刷新。两者在 `subscriptions.source_type` 上互斥，`imports` 只是 raw 快照历史，不表示可同时启用第二个来源。
+- **摄入来源二选一**：文件来源由人在别处下好、导进服务；URL 来源由服务存 URL 并刷新。两者在
+  `subscriptions.source_type` 上互斥，`imports` 只是 raw 快照历史，不表示可同时启用第二个来源。
+  订阅详情把最近一次成功导入的完整 raw 交给管理页编辑；URL 来源改为手动来源需要 UI 确认和 API
+  `detach_url=true` 显式 opt-in，成功时与新快照在同一事务内切换，失败则保留 URL 与旧快照。
 - **下发 = 统一 pull**（不做 push）：每台（macmini/rig/MBA）从 rig 的 API 拉自己的配置 + 本地 reload。受管 = 保证拉到最新；非受管 = 尽力拉。
 - **存储可换**：先文件后端，后 DB（SQLite 起步，监控量大再 Postgres/Timescale）。⚠️ DB 含节点凭据 = secret 载体，需访问控制、别对公网暴露。
 - **节点身份 v1**：`EndpointId=(type, 规范化 server, port)`；`AccessId=sha256(连接参数去掉显示名)`，人工标签挂 AccessId。
@@ -66,7 +69,8 @@ mihomo health-check → 指标存储 → 生成器读「过去 N 时长不健康
 - **来源级节点 DNS**：若 Clash 订阅自带 `dns.proxy-server-nameserver`，render 为该来源当前实际输出的
   每个节点域名生成精确 `proxy-server-nameserver-policy`；其他来源仍走全局节点 DNS。IP 节点不生成
   policy；同一域名被不同来源声明为不同解析器时 fail-closed，避免静默选择错误入口。DoH URL 随
-  订阅快照存 DB（secret），不经管理 API 返回。
+  订阅快照存 DB（secret）；只有管理用订阅详情的完整 raw 会回显它，订阅列表和节点 API 不返回。
+  因管理 API 暂无认证，服务必须只绑定 loopback 或受 ACL 保护的私网。
 
 ## 分组 + 订阅输出（已落地）
 - **地区分组**(`conduit/tags.py`)：`region_of` **文本关键词优先、旗帜 emoji 兜底**(机场常把台湾标 🇨🇳)；
