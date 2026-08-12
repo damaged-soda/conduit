@@ -383,6 +383,15 @@ class Store:
             row = self._conn.execute("SELECT * FROM subscriptions WHERE id = ?", (sub_id,)).fetchone()
         return dict(row) if row else None
 
+    def latest_import_raw(self, sub_id: str) -> str | None:
+        """返回最近一次成功导入的原文，供订阅详情编辑；不要用于列表接口。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT raw FROM imports WHERE sub_id = ? ORDER BY id DESC LIMIT 1",
+                (sub_id,),
+            ).fetchone()
+        return row["raw"] if row else None
+
     def list_subscriptions(self) -> list[dict]:
         """列订阅（**不返回 url**，含 token = secret；只给 has_url 标志）。"""
         with self._lock:

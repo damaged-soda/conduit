@@ -256,6 +256,7 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
             "created_at": sub["created_at"],
             "url": sub.get("url"),
             "has_url": bool(sub.get("url")),
+            "raw": store.latest_import_raw(sub_id),
             "node_count": len(store.list_nodes(sub_id)),
         }
 
@@ -706,9 +707,10 @@ async function renderDetail(){
   const url=input('订阅 URL（http/https）',sub.url||'');
   const file=fileInput();
   const raw=document.createElement('textarea');raw.placeholder='把 clash YAML / URI / base64 订阅内容贴这里';
+  raw.value=sub.raw||'';
   const msg=el('span','');msg.className='msg';msg.id='msg';
   const isUrl=sub.source_type==='url';
-  let mode=isUrl?'url':(MANUAL_MODE[sub.id]||'file');
+  let mode=isUrl?'url':(MANUAL_MODE[sub.id]||(sub.raw?'text':'file'));
   async function saveSource(){
     const body={name:name.value};
     if(mode==='url'){
@@ -729,15 +731,15 @@ async function renderDetail(){
   }
   const refreshBtn=btn('🔄 保存并按 URL 刷新',async()=>{try{await saveSource();const r=await jpost(`/api/subscriptions/${SEL}/refresh`);await select(SEL);setMsg('刷新：导入 '+r.imported+' 节点')}catch(e){setMsg('刷新失败: '+e.message)}});
   const deleteBtn=btn('🗑 删除订阅',async()=>{if(confirm('删除该订阅及其节点？')){await j(`/api/subscriptions/${SEL}`,{method:'DELETE'});delete MANUAL_MODE[SEL];SEL=null;await loadSubs();document.getElementById('detail').replaceChildren(el('p','已删除。'))}});
-  const importFileBtn=btn('导入文件',async()=>{try{await importManual(await selectedFileText(file))}catch(e){setMsg('导入失败: '+e.message)}});
-  const importTextBtn=btn('导入文本',async()=>{try{if(!raw.value.trim())throw new Error('请输入订阅内容');await importManual(raw.value)}catch(e){setMsg('导入失败: '+e.message)}});
+  const importFileBtn=btn('从文件替换',async()=>{try{await importManual(await selectedFileText(file))}catch(e){setMsg('导入失败: '+e.message)}});
+  const importTextBtn=btn('保存内容并导入',async()=>{try{if(!raw.value.trim())throw new Error('请输入订阅内容');await importManual(raw.value)}catch(e){setMsg('导入失败: '+e.message)}});
   const saveBtn=btn('保存',async()=>{try{await saveSource();await renderDetail();setMsg('已保存')}catch(e){setMsg('保存失败: '+e.message)}});
   const sourceBox=document.createElement('div');
   function renderSourceControls(){
     sourceBox.replaceChildren();
     if(mode==='url')sourceBox.append(row(el('label','URL：'),url),row(refreshBtn));
     else if(mode==='file')sourceBox.append(row(el('label','文件：'),file),row(importFileBtn));
-    else sourceBox.append(el('div','文本导入：'),raw,row(importTextBtn));
+    else sourceBox.append(el('div','当前订阅内容：'),raw,row(importTextBtn));
   }
   renderSourceControls();
 
