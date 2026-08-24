@@ -13,6 +13,25 @@
 - 合并到 `main` 后，如本次变更需要触发发布镜像/留 release 点，打 annotated tag：`git tag -a vX.Y.Z -m "conduit vX.Y.Z" <merge-commit>` → `git push origin vX.Y.Z`。
 - 现有节奏是 patch 递增（如 `v0.1.5` → `v0.1.6`），tag 打在 PR 的 merge commit 上。
 
+## 生产部署（fleet-deploy 过渡期）
+
+- tag 的 `build-image` run 成功、`ghcr.io/damaged-soda/conduit:vX.Y.Z` 就绪后，
+  在 macmini 执行：
+  ```sh
+  cd /Users/leavan/work/personal/fleet-deploy
+  git switch main
+  git pull --ff-only
+  /opt/homebrew/bin/python3.12 bin/fleet-deploy bump conduit vX.Y.Z --host rig --commit
+  git push
+  /opt/homebrew/bin/python3.12 bin/fleet-deploy sync --host rig --service conduit
+  ssh rig 'curl -fsS http://127.0.0.1:8000/api/meta'
+  ```
+- `bump` 是 pin 直提 `main` 的唯一入口；不要手改 pin，也不要用
+  `--no-verify-artifact` 绕过正常产物校验。`sync` 输出必须是 `deploy success` 或
+  `no-op (converged, healthy)`，且 `/api/meta` 返回新版本。
+- 常规回滚把 `bump` 的版本换成旧 tag 后重新 push + sync；部署引擎或 compose
+  形式变更走 fleet-deploy 的 revert PR。
+
 ## secrets 永不进 git
 - 订阅 URL / API key / controller secret / `.env` 一处存、`.gitignore`、**绝不提交**。
 - 一旦误推，按「泄露」处理：立即轮换该凭据。
