@@ -10,7 +10,7 @@ image_tag=release
 
 fail() { echo "conduit-deploy: $*" >&2; exit 1; }
 usage() {
-  echo "usage: bin/conduit-deploy --production [--image-tag <release|vX.Y.Z|sha-...>]" >&2
+  echo "usage: bin/conduit-deploy --production [--image-tag <release|vX.Y.Z>]" >&2
   exit 2
 }
 
@@ -55,14 +55,14 @@ case "$image_tag" in
       --match 'v*' "$head_commit" 2>/dev/null)" ||
       fail "origin/main 历史中没有可验证的 release tag"
     ;;
-  v[0-9]*|sha-[0-9a-f]*) expected_version="$image_tag" ;;
-  *) fail "只支持 release、v* 或 sha-* 镜像 tag" ;;
+  v[0-9]*) expected_version="$image_tag" ;;
+  *) fail "只支持 release 或 v* 镜像 tag" ;;
 esac
 
 for command_name in ssh rsync curl tailscale; do
   command -v "$command_name" >/dev/null 2>&1 || fail "缺少命令：$command_name"
 done
-[ -x /usr/bin/python3 ] || fail "缺少 /usr/bin/python3"
+/usr/bin/python3 -c pass >/dev/null 2>&1 || fail "缺少可用的 /usr/bin/python3"
 [ -r "$actual_root/deploy/compose.yaml" ] || fail "缺少 deploy/compose.yaml"
 
 echo "→ 安装 conduit 生产 Compose（source $head_commit）"
