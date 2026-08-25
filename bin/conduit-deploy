@@ -36,7 +36,7 @@ actual_root="$(cd "$here" && pwd -P)"
 [ -d "$expected_root" ] || fail "canonical checkout 不存在：$expected_root"
 canonical_root="$(cd "$expected_root" && pwd -P)"
 [ "$actual_root" = "$canonical_root" ] ||
-  fail "拒绝从 worktree 投产：$actual_root（只允许 $canonical_root）"
+  fail "拒绝从 worktree 投产：${actual_root}（只允许 ${canonical_root}）"
 [ "$(git -C "$actual_root" remote get-url origin)" = "$expected_remote" ] ||
   fail "origin 不是约定 remote：$expected_remote"
 [ "$(git -C "$actual_root" symbolic-ref --quiet --short HEAD || true)" = main ] ||
@@ -65,7 +65,7 @@ done
 /usr/bin/python3 -c pass >/dev/null 2>&1 || fail "缺少可用的 /usr/bin/python3"
 [ -r "$actual_root/deploy/compose.yaml" ] || fail "缺少 deploy/compose.yaml"
 
-echo "→ 安装 conduit 生产 Compose（source $head_commit）"
+echo "→ 安装 conduit 生产 Compose（source ${head_commit}）"
 ssh $ssh_opts rig 'mkdir -p "$HOME/.local/lib/conduit/deploy"' ||
   fail "rig 运行目录准备失败"
 rsync -az -e "ssh $ssh_opts" "$actual_root/deploy/compose.yaml" \
@@ -113,6 +113,6 @@ if not isinstance(value, str) or not value:
 print(value)
 ')" || fail "conduit /api/meta 缺少版本"
 [ "$observed_version" = "$expected_version" ] ||
-  fail "conduit 版本不符：期望 $expected_version，实际 $observed_version"
+  fail "conduit 版本不符：期望 ${expected_version}，实际 ${observed_version}"
 
-echo "conduit-deploy: 完成（version=$observed_version source=$head_commit）"
+echo "conduit-deploy: 完成（version=${observed_version} source=${head_commit}）"
