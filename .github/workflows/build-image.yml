@@ -4,7 +4,7 @@
 # Tag 语义：
 #   latest  —— 每次合 main 都动（最新开发态，供 standalone/manual compose 使用）。
 #   release —— 只在打 v* tag 时移动（固定的「已发布」指针，供人工 / 兼容消费）。
-#   v*      —— 不可变的版本镜像；生产 rig 由 fleet-deploy 仓 pin 具体 v* tag。
+#   v*      —— 不可变的版本镜像；仅供显式回滚或固定版本部署。
 #   sha-xxxx —— 每个 commit 一个不可变镜像。
 name: build-image
 
