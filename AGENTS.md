@@ -24,7 +24,8 @@
 - `bin/conduit-deploy` 是生产部署单写者：只接受 macmini canonical main 且现场要求
   `HEAD == origin/main`，把仓内 `deploy/compose.yaml` 投影到 rig，先显式 pull，随后
   禁止 build / 二次 pull 地原地收敛现有 `conduit-service` project，并回验 localhost
-  与 tailnet `/api/meta`。默认跟踪发布指针 `release`，不维护中央版本 pin。
+  与 tailnet `/api/meta` 的版本。默认跟踪发布指针 `release`，不维护中央版本 pin；
+  rig 侧用 app-owned 锁拒绝并发部署交错。
 - 常规回滚不改仓内默认值，显式执行
   `bin/conduit-deploy --production --image-tag vX.Y.Z`；配置回滚走本仓 revert PR，
   合并后重新部署。

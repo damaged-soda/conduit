@@ -44,15 +44,25 @@ canonical_root="$(cd "$expected_root" && pwd -P)"
 [ -z "$(git -C "$actual_root" status --porcelain)" ] ||
   fail "canonical main 有未提交或未跟踪内容"
 
-git -C "$actual_root" fetch origin main --prune
+git -C "$actual_root" fetch origin main --tags --prune
 head_commit="$(git -C "$actual_root" rev-parse HEAD)"
 remote_commit="$(git -C "$actual_root" rev-parse refs/remotes/origin/main)"
 [ "$head_commit" = "$remote_commit" ] ||
   fail "canonical main 尚未快进到 origin/main"
+case "$image_tag" in
+  release)
+    expected_version="$(git -C "$actual_root" describe --tags --abbrev=0 \
+      --match 'v*' "$head_commit" 2>/dev/null)" ||
+      fail "origin/main 历史中没有可验证的 release tag"
+    ;;
+  v[0-9]*|sha-[0-9a-f]*) expected_version="$image_tag" ;;
+  *) fail "只支持 release、v* 或 sha-* 镜像 tag" ;;
+esac
 
 for command_name in ssh rsync curl tailscale; do
   command -v "$command_name" >/dev/null 2>&1 || fail "缺少命令：$command_name"
 done
+[ -x /usr/bin/python3 ] || fail "缺少 /usr/bin/python3"
 [ -r "$actual_root/deploy/compose.yaml" ] || fail "缺少 deploy/compose.yaml"
 
 echo "→ 安装 conduit 生产 Compose（source $head_commit）"
@@ -68,6 +78,16 @@ image_tag="$1"
 runtime="$HOME/.local/lib/conduit/deploy"
 next="$runtime/compose.yaml.next"
 compose="$runtime/compose.yaml"
+command -v flock >/dev/null 2>&1 || {
+  echo "conduit-deploy: rig 缺少 flock" >&2
+  exit 1
+}
+mkdir -p "$HOME/.local/state"
+exec 9>"$HOME/.local/state/conduit-deploy.lock"
+flock -w 300 9 || {
+  echo "conduit-deploy: 等待 rig 部署锁超时" >&2
+  exit 1
+}
 CONDUIT_IMAGE_TAG="$image_tag" docker compose --project-name conduit-service \
   -f "$next" config -q
 mv "$next" "$compose"
@@ -83,7 +103,16 @@ import json,sys
 print(json.load(sys.stdin).get("MagicDNSSuffix") or "")
 ')"
 [ -n "$suffix" ] || fail "Tailscale 尚未取得 MagicDNS 后缀"
-curl -fsS --max-time 10 "https://conduit.$suffix/api/meta" >/dev/null ||
+meta="$(curl -fsS --max-time 10 "https://conduit.$suffix/api/meta")" ||
   fail "conduit tailnet 入口不可达"
+observed_version="$(printf '%s' "$meta" | /usr/bin/python3 -c '
+import json,sys
+value = json.load(sys.stdin).get("version")
+if not isinstance(value, str) or not value:
+    raise SystemExit(1)
+print(value)
+')" || fail "conduit /api/meta 缺少版本"
+[ "$observed_version" = "$expected_version" ] ||
+  fail "conduit 版本不符：期望 $expected_version，实际 $observed_version"
 
-echo "conduit-deploy: 完成（image-tag=$image_tag source=$head_commit）"
+echo "conduit-deploy: 完成（version=$observed_version source=$head_commit）"
