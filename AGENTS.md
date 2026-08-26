@@ -1,6 +1,7 @@
 # AGENTS.md — conduit 工作约定
 
-沿用 fleet 的硬规矩，只放当前真用得上的。
+本仓属于 personal 域（域约定见 `~/work/personal/AGENTS.md`）；这里只保留 conduit 自身
+当前真用得上的约束。
 
 ## 改动走 PR
 - 任何改动开新分支（ASCII kebab，如 `feat/...` / `chore/...`）→ push → `gh pr create` 提 review + merge。

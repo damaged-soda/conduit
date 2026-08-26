@@ -34,7 +34,7 @@
 
 ## 关键测试：私有网旁路（rule#0）
 
-调用方的「必须直连」里通常有一张私有网 overlay（在 fleet 场景里是 tailscale 加它的中继 / 控制面）。TUN 一旦把它的**底层**抓走，整张 mesh 就断 —— 这是最危险、最该测的一条，而它**能在 Docker（Linux 容器 netns）里相当真实地测**（只对 Linux 路径 faithful，注意见下）。
+调用方的「必须直连」里通常有一张私有网 overlay（例如 Tailscale 加它的中继 / 控制面）。TUN 一旦把它的**底层**抓走，整张 mesh 就断 —— 这是最危险、最该测的一条，而它**能在 Docker（Linux 容器 netns）里相当真实地测**（只对 Linux 路径 faithful，注意见下）。
 
 **怎么测：** privileged 容器里跑**真的 overlay**（如 tailscale，join 一个**一次性** tailnet：headscale 或 ephemeral+tagged 节点，测完自动清）+ 同 netns 的 mihomo TUN（带调用方的 direct-list）。断言：**mihomo TUN 开着时，仍能连到 overlay 的 peer**。能连 = 旁路对；连不上 = mesh 被抓断。
 

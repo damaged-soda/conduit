@@ -13,7 +13,7 @@ conduit 通过**读外部文件**接收调用方的现状（不硬编码、不�
 - **direct-list 文件**：结构化的必须直连目的地（`domain_exact/suffix/wildcard` + `ip_cidr`）；schema 见 `examples/direct-list.example.yaml`。
 - **rules / tags / policies**：默认策略版本控制在 `conduit/policy.py`；服务内的人工标签和自定义 policy 存 DB。`config/` 目前只保留为后续外置规则源的占位。
 
-真值由调用方（如 fleet）按 schema 填，住在调用方那边或某个约定路径；conduit 只认 schema，不认来源。
+真值由调用方按 schema 填，住在调用方产品仓或其约定路径；conduit 只认 schema，不认来源。
 
 ## 控制面形态（已定，2026-06-20）
 
