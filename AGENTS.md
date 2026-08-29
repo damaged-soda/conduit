@@ -1,6 +1,6 @@
 # AGENTS.md — conduit 工作约定
 
-本仓属于 personal 域（域约定见 `~/work/personal/AGENTS.md`）；这里只保留 conduit 自身
+本仓属于 personal 域；这里只保留 conduit 自身
 当前真用得上的约束。
 
 ## 改动走 PR
