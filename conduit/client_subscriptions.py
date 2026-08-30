@@ -20,7 +20,9 @@ from .udp import truthy
 
 _MRS_BASE = "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo"
 _CORE_KEYS = {"name", "type", "server", "port"}
-_SURGE_BUILTINS = {"DIRECT", "REJECT", "REJECT-DROP"}
+_CLIENT_BUILTINS = {"DIRECT", "REJECT", "REJECT-DROP"}
+_CORE_GROUPS = {"PROXY", "AUTO", "AUTO-FAST"}
+_SHADOWROCKET_TEST_URL = "http://www.gstatic.com/generate_204"
 
 
 class NoCompatibleProxies(ValueError):
@@ -254,7 +256,7 @@ def _shadowrocket_hysteria(proxy: dict) -> str:
 
 def _shadowrocket_hysteria2(proxy: dict) -> str:
     _only_keys(proxy, {
-        "password", "ports", "hop-interval", "down", "obfs", "obfs-password",
+        "password", "ports", "hop-interval", "up", "down", "obfs", "obfs-password",
         "sni", "fingerprint", "skip-cert-verify", "alpn", "udp",
     })
     query: list[tuple[str, str]] = []
@@ -291,22 +293,86 @@ def _shadowrocket_uri(proxy: dict) -> str:
     raise _UnsupportedProxy(f"Shadowrocket 不支持 {kind}")
 
 
-def render_shadowrocket_subscription(clash_config: dict) -> ClientSubscription:
-    """输出 Shadowrocket 常用的整份 base64 URI 行订阅。"""
-    proxies = clash_config.get("proxies") or []
-    uris: list[str] = []
-    for proxy in proxies:
+def _safe_config_labels(names: list[str], reserved: set[str]) -> dict[str, str]:
+    used = set(reserved)
+    out: dict[str, str] = {}
+    for original in names:
+        base = re.sub(r'[=,\r\n\t"\\#;]+', " ", original).strip() or "node"
+        name = base
+        if name in used:
+            name = f"{base}-{hashlib.sha1(original.encode()).hexdigest()[:6]}"
+        suffix = 2
+        while name in used:
+            name = f"{base}-{suffix}"
+            suffix += 1
+        used.add(name)
+        out[original] = name
+    return out
+
+
+def _shadowrocket_region_markers(regions: list[str]) -> dict[str, str]:
+    """生成只含字母数字/下划线的稳定 marker，供 policy-regex-filter 精确匹配。"""
+    used: set[str] = set()
+    out: dict[str, str] = {}
+    for region in regions:
+        base = "".join(ch if ch.isalnum() else "_" for ch in region).strip("_") or "region"
+        marker = base
+        if marker in used:
+            marker = f"{base}_{hashlib.sha1(region.encode()).hexdigest()[:6]}"
+        suffix = 2
+        while marker in used:
+            marker = f"{base}_{suffix}"
+            suffix += 1
+        used.add(marker)
+        out[region] = marker
+    return out
+
+
+def _shadowrocket_nodes(clash_config: dict) -> tuple[list[tuple[dict, str, str]], list[str]]:
+    """返回兼容节点 (原 proxy, URI, region) 与按配置顺序出现的地区。"""
+    all_proxies = clash_config.get("proxies") or []
+    region_by_proxy: dict[str, str] = {}
+    ordered_regions: list[str] = []
+    for group in clash_config.get("proxy-groups") or []:
+        region = str(group.get("name") or "")
+        if not region or region in _CORE_GROUPS:
+            continue
+        if region not in ordered_regions:
+            ordered_regions.append(region)
+        for member in group.get("proxies") or []:
+            region_by_proxy.setdefault(str(member), region)
+
+    uncategorized = "未分类"
+    if (
+        any(str(proxy.get("name")) not in region_by_proxy for proxy in all_proxies)
+        and uncategorized not in ordered_regions
+    ):
+        ordered_regions.append(uncategorized)
+    markers = _shadowrocket_region_markers(ordered_regions)
+
+    compatible: list[tuple[dict, str, str]] = []
+    for proxy in all_proxies:
+        region = region_by_proxy.get(str(proxy.get("name")), uncategorized)
+        renamed = {**proxy, "name": f"@{markers[region]}:{proxy.get('name', '')}"}
         try:
-            uris.append(_shadowrocket_uri(proxy))
+            compatible.append((proxy, _shadowrocket_uri(renamed), region))
         except (_UnsupportedProxy, TypeError, ValueError, KeyError):
             continue
-    if not uris:
+    return compatible, ordered_regions
+
+
+def render_shadowrocket_subscription(clash_config: dict) -> ClientSubscription:
+    """输出 Shadowrocket 常用的整份 base64 URI 行节点订阅。"""
+    all_proxies = clash_config.get("proxies") or []
+    compatible, _ = _shadowrocket_nodes(clash_config)
+    if not compatible:
         raise NoCompatibleProxies("没有可导出的 Shadowrocket 兼容节点")
+    uris = [uri for _, uri, _ in compatible]
     raw = "\n".join(uris) + "\n"
-    return ClientSubscription(_b64(raw), len(uris), len(proxies) - len(uris))
+    return ClientSubscription(_b64(raw), len(uris), len(all_proxies) - len(uris))
 
 
-def _surge_value(value: object) -> str:
+def _config_value(value: object) -> str:
     text = str(value)
     if "\n" in text or "\r" in text:
         raise _UnsupportedProxy("Surge 值含换行")
@@ -317,7 +383,7 @@ def _surge_value(value: object) -> str:
 
 
 def _surge_params(parts: list[str], params: list[tuple[str, object]]) -> str:
-    return ", ".join([*parts, *(f"{key}={_surge_value(value)}" for key, value in params)])
+    return ", ".join([*parts, *(f"{key}={_config_value(value)}" for key, value in params)])
 
 
 def _surge_tls(proxy: dict) -> list[tuple[str, object]]:
@@ -368,7 +434,7 @@ def _surge_ss(proxy: dict) -> str:
         if opts.get("host"):
             params.append(("obfs-host", opts["host"]))
     return _surge_params(
-        ["ss", _surge_value(proxy["server"]), str(int(proxy["port"]))], params
+        ["ss", _config_value(proxy["server"]), str(int(proxy["port"]))], params
     )
 
 
@@ -391,7 +457,7 @@ def _surge_vmess(proxy: dict) -> str:
         params.append(("tls", "true"))
     params += _surge_ws(proxy) + _surge_tls(proxy)
     return _surge_params(
-        ["vmess", _surge_value(proxy["server"]), str(int(proxy["port"]))], params
+        ["vmess", _config_value(proxy["server"]), str(int(proxy["port"]))], params
     )
 
 
@@ -403,7 +469,7 @@ def _surge_trojan(proxy: dict) -> str:
     params: list[tuple[str, object]] = [("password", _required(proxy, "password"))]
     params += _surge_ws(proxy) + _surge_tls(proxy)
     return _surge_params(
-        ["trojan", _surge_value(proxy["server"]), str(int(proxy["port"]))], params
+        ["trojan", _config_value(proxy["server"]), str(int(proxy["port"]))], params
     )
 
 
@@ -436,7 +502,7 @@ def _surge_hysteria2(proxy: dict) -> str:
         params.append(("server-cert-fingerprint-sha256", fingerprint.lower()))
     params += _surge_tls(proxy)
     return _surge_params(
-        ["hysteria2", _surge_value(proxy["server"]), str(int(proxy["port"]))], params
+        ["hysteria2", _config_value(proxy["server"]), str(int(proxy["port"]))], params
     )
 
 
@@ -453,24 +519,9 @@ def _surge_proxy(proxy: dict) -> str:
     raise _UnsupportedProxy(f"Surge 不支持 {kind}")
 
 
-def _safe_surge_labels(names: list[str], reserved: set[str]) -> dict[str, str]:
-    used = set(reserved)
-    out: dict[str, str] = {}
-    for original in names:
-        base = re.sub(r'[=,\r\n\t"\\#;]+', " ", original).strip() or "node"
-        name = base
-        if name in used:
-            name = f"{base}-{hashlib.sha1(original.encode()).hexdigest()[:6]}"
-        suffix = 2
-        while name in used:
-            name = f"{base}-{suffix}"
-            suffix += 1
-        used.add(name)
-        out[original] = name
-    return out
-
-
-def _surge_rules(clash_config: dict, target_map: dict[str, str]) -> list[str]:
+def _client_rules(
+    clash_config: dict, target_map: dict[str, str], *, destination_port: str
+) -> list[str]:
     providers = clash_config.get("rule-providers") or {}
     out: list[str] = []
     for rule in clash_config.get("rules") or []:
@@ -500,9 +551,73 @@ def _surge_rules(clash_config: dict, target_map: dict[str, str]) -> list[str]:
         elif kind == "GEOIP":
             kind, value = "RULE-SET", f"{_MRS_BASE}/geoip/{value.lower()}.list"
         elif kind == "DST-PORT":
-            kind = "DEST-PORT"
-        out.append(",".join([kind, _surge_value(value), target, *options]))
+            kind = destination_port
+        out.append(",".join([kind, _config_value(value), target, *options]))
     return out
+
+
+def _shadowrocket_subscription_name(value: str) -> str:
+    if (
+        not value
+        or value != value.strip()
+        or len(value) > 64
+        or any(ch in value for ch in '=,#;\r\n\t"\\')
+    ):
+        raise ValueError("Shadowrocket 节点订阅名称非法")
+    return value
+
+
+def render_shadowrocket_config(
+    clash_config: dict,
+    *,
+    subscription_name: str = "conduit",
+    update_url: str | None = None,
+) -> ClientSubscription:
+    """输出引用同名节点订阅、包含地区组与规则的 Shadowrocket 完整配置。"""
+    subscription_name = _shadowrocket_subscription_name(subscription_name)
+    all_proxies = clash_config.get("proxies") or []
+    compatible, ordered_regions = _shadowrocket_nodes(clash_config)
+    if not compatible:
+        raise NoCompatibleProxies("没有可导出的 Shadowrocket 兼容节点")
+
+    active_regions = {region for _, _, region in compatible}
+    regions = [region for region in ordered_regions if region in active_regions]
+    region_name_map = _safe_config_labels(
+        regions, _CORE_GROUPS | _CLIENT_BUILTINS
+    )
+    markers = _shadowrocket_region_markers(ordered_regions)
+
+    groups: list[str] = []
+    for region in regions:
+        groups.append(
+            f"{region_name_map[region]} = fallback, {subscription_name}, use=true, "
+            f"policy-regex-filter=^@{markers[region]}:, interval=60, timeout=2, "
+            f"url={_SHADOWROCKET_TEST_URL}"
+        )
+    groups.append(
+        f"AUTO = url-test, {subscription_name}, use=true, interval=60, timeout=2, "
+        f"tolerance=200, url={_SHADOWROCKET_TEST_URL}"
+    )
+    groups.append(
+        "PROXY = select, AUTO"
+        + "".join(f", {region_name_map[region]}" for region in regions)
+    )
+
+    target_map = {name: name for name in _CLIENT_BUILTINS | _CORE_GROUPS}
+    target_map.update(region_name_map)
+    rules = _client_rules(clash_config, target_map, destination_port="DST-PORT")
+    if not rules or not rules[-1].startswith("FINAL,"):
+        rules.append("FINAL,PROXY")
+
+    lines = ["[General]", "loglevel = notify", "dns-server = system, 1.1.1.1, 8.8.8.8"]
+    if update_url:
+        if "\n" in update_url or "\r" in update_url:
+            raise ValueError("update_url 含换行")
+        lines.append(f"update-url = {update_url}")
+    lines += ["", "[Proxy Group]", *groups, "", "[Rule]", *rules, ""]
+    return ClientSubscription(
+        "\n".join(lines), len(compatible), len(all_proxies) - len(compatible)
+    )
 
 
 def render_surge_subscription(
@@ -530,11 +645,11 @@ def render_surge_subscription(
         if any(member in proxy_names for member in group.get("proxies") or []):
             region_groups.append(name)
 
-    core_groups = {"PROXY", "AUTO", "AUTO-FAST"}
-    region_name_map = _safe_surge_labels(region_groups, core_groups | _SURGE_BUILTINS)
-    name_map = _safe_surge_labels(
+    core_groups = _CORE_GROUPS
+    region_name_map = _safe_config_labels(region_groups, core_groups | _CLIENT_BUILTINS)
+    name_map = _safe_config_labels(
         [proxy["name"] for proxy, _ in compatible],
-        core_groups | _SURGE_BUILTINS | set(region_name_map.values()),
+        core_groups | _CLIENT_BUILTINS | set(region_name_map.values()),
     )
 
     # 叶子到根：避免旧版 Surge 对同 section 内的 group 前向引用解析不一致。
@@ -563,9 +678,9 @@ def render_surge_subscription(
         + "".join(f", {region_name_map[name]}" for name in region_groups)
     )
 
-    target_map = {name: name for name in _SURGE_BUILTINS | core_groups}
+    target_map = {name: name for name in _CLIENT_BUILTINS | core_groups}
     target_map.update(region_name_map)
-    rules = _surge_rules(clash_config, target_map)
+    rules = _client_rules(clash_config, target_map, destination_port="DEST-PORT")
     if not rules or not rules[-1].startswith("FINAL,"):
         rules.append("FINAL,PROXY")
 

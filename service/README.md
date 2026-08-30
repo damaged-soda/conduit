@@ -54,11 +54,17 @@ Clash Verge/Mihomo、Shadowrocket 或 Surge。
 
 **订阅产物**
 - `GET /sub/clash?token=&full=`：`pure` = proxies + 地区分组 + 规则；`full=1` 再加 fake-ip dns + tun（IPv6 接管 + default-nameserver，见根 [CONSTRAINTS.md](../CONSTRAINTS.md) 「full 模式必须项」）
-- `GET /sub/shadowrocket?token=`：Shadowrocket 常用的整份 base64 URI 行订阅；支持导出
-  ss/vmess/trojan/vless/hysteria/hysteria2，无法可靠映射的节点跳过。
+- `GET /sub/shadowrocket?token=`：Shadowrocket 常用的整份 base64 URI 行**节点订阅**；支持导出
+  ss/vmess/trojan/vless/hysteria/hysteria2，无法可靠映射的节点跳过。节点名会带 `@地区:` 前缀，
+  供完整配置按 conduit 的地区标签精确分组。
+- `GET /sub/shadowrocket-config?token=&subscription_name=conduit`：Shadowrocket 完整配置
+  （`[General]` / `[Proxy Group]` / `[Rule]`），含地区组、`AUTO` 和与 Clash/Surge 同源的分流规则。
+  Shadowrocket 把节点订阅与配置分开管理：先导入上一条节点 URL，并把订阅名称设为
+  `subscription_name`（默认 `conduit`），再导入本配置 URL；两者之后各自更新。配置通过
+  `use=true` 引用同名节点订阅，而不是复制一份节点凭据。
 - `GET /sub/surge?token=`：完整 Surge managed profile（`[General]` / `[Proxy]` / `[Proxy Group]` /
   `[Rule]`）；支持 Surge 原生的 ss/vmess/trojan/hysteria2。VLESS、Hysteria 1 以及 Surge 无法表达的
-  传输参数会跳过。两个新接口以 `X-Conduit-Compatible-Nodes` / `X-Conduit-Omitted-Nodes` 报告数量；
+  传输参数会跳过。客户端接口以 `X-Conduit-Compatible-Nodes` / `X-Conduit-Omitted-Nodes` 报告数量；
   若没有任何兼容节点则返回 422，避免静默退化为直连。
 - Clash 来源若自带 `dns.proxy-server-nameserver`，导入会把它作为 secret 元数据随当前快照保存；
   `full=1` 按该来源实际节点的精确域名生成 `proxy-server-nameserver-policy`，不会接管其他订阅或普通

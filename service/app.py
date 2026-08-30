@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from conduit.client_subscriptions import (
     ClientSubscription,
     NoCompatibleProxies,
+    render_shadowrocket_config,
     render_shadowrocket_subscription,
     render_surge_subscription,
 )
@@ -497,6 +498,27 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
             headers=_client_headers("conduit-shadowrocket.txt", rendered),
         )
 
+    @app.get("/sub/shadowrocket-config")
+    def sub_shadowrocket_config(
+        request: Request, token: str = "", subscription_name: str = "conduit"
+    ):
+        _check_sub_token(token)
+        try:
+            rendered = render_shadowrocket_config(
+                _subscription_config(),
+                subscription_name=subscription_name,
+                update_url=_managed_url(request),
+            )
+        except NoCompatibleProxies as exc:
+            raise HTTPException(422, str(exc))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return Response(
+            rendered.content,
+            media_type="text/plain; charset=utf-8",
+            headers=_client_headers("conduit-shadowrocket.conf", rendered),
+        )
+
     @app.get("/sub/surge")
     def sub_surge(request: Request, token: str = ""):
         _check_sub_token(token)
@@ -863,7 +885,8 @@ async function loadSub(){
   document.getElementById('sub').replaceChildren(
     el('div','Clash/Mihomo：'), el('code',clash),
     el('div','Clash/Mihomo（带 DNS/TUN）：'), el('code',clash+'&full=1'),
-    el('div','Shadowrocket：'), el('code',location.origin+'/sub/shadowrocket'+q),
+    el('div','Shadowrocket 节点（导入后命名为 conduit）：'), el('code',location.origin+'/sub/shadowrocket'+q),
+    el('div','Shadowrocket 配置（地区组 / AUTO / 分流规则）：'), el('code',location.origin+'/sub/shadowrocket-config'+q),
     el('div','Surge：'), el('code',location.origin+'/sub/surge'+q));
 }
 let POL=null, TARGETS=[], CATS={}, CUSTOM=false, EDIT=false, RULES=[];

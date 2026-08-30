@@ -13,6 +13,7 @@ sys.path.insert(0, str(HERE.parent))
 
 from conduit.client_subscriptions import (  # noqa: E402
     NoCompatibleProxies,
+    render_shadowrocket_config,
     render_shadowrocket_subscription,
     render_surge_subscription,
 )
@@ -113,13 +114,15 @@ def test_shadowrocket_is_base64_uri_feed_and_round_trips_supported_protocols():
         "ss", "vmess", "trojan", "vless", "hysteria2"
     ]
     round_tripped = normalize(raw, "uri", "shadowrocket")
-    assert {node.raw_name for node in round_tripped} == {proxy["name"] for proxy in proxies}
+    assert {node.raw_name for node in round_tripped} == {
+        "@HK:SS 香港", "@HK:VM WS", "@US:Trojan", "@US:VLESS Reality", "@US:HY2"
+    }
     by_name = {node.raw_name: node for node in round_tripped}
-    assert by_name["SS 香港"].params["password"] == "p:a@ss"
-    assert by_name["VM WS"].params["ws-opts"] == {
+    assert by_name["@HK:SS 香港"].params["password"] == "p:a@ss"
+    assert by_name["@HK:VM WS"].params["ws-opts"] == {
         "path": "/v2", "headers": {"Host": "cdn.example"}
     }
-    assert by_name["VLESS Reality"].params["reality-opts"] == {
+    assert by_name["@US:VLESS Reality"].params["reality-opts"] == {
         "public-key": "pub", "short-id": "abcd"
     }
     assert rendered.included == 5 and rendered.omitted == 0
@@ -153,6 +156,61 @@ def test_shadowrocket_ss_2022_uses_plain_sip002_userinfo():
     node = normalize(uri, "uri", "shadowrocket")[0]
     assert node.params["cipher"] == proxy["cipher"]
     assert node.params["password"] == proxy["password"]
+
+
+def test_shadowrocket_config_references_node_feed_and_maps_groups_and_rules():
+    proxies = [
+        {
+            "name": "HK node", "type": "ss", "server": "hk.example", "port": 8388,
+            "cipher": "aes-256-gcm", "password": "password", "udp": True,
+        },
+        {
+            "name": "unsupported", "type": "socks5", "server": "s.example", "port": 1080,
+        },
+        {
+            "name": "US node", "type": "trojan", "server": "us.example", "port": 443,
+            "password": "password", "sni": "us.example", "udp": True,
+        },
+    ]
+    rendered = render_shadowrocket_config(
+        _config(proxies),
+        subscription_name="conduit",
+        update_url="https://conduit.example/sub/shadowrocket-config?token=secret",
+    )
+    profile = rendered.content
+    assert "update-url = https://conduit.example/sub/shadowrocket-config?token=secret" in profile
+    assert (
+        "HK = fallback, conduit, use=true, policy-regex-filter=^@HK:, "
+        "interval=60, timeout=2"
+    ) in profile
+    assert "US = fallback, conduit, use=true, policy-regex-filter=^@US:" in profile
+    assert "AUTO = url-test, conduit, use=true" in profile
+    assert "PROXY = select, AUTO, HK, US" in profile
+    assert "/geosite/category-ai-!cn.list,US" in profile
+    assert "/geoip/cn.list,DIRECT,no-resolve" in profile
+    assert "DST-PORT,22,DIRECT" in profile
+    assert profile.rstrip().endswith("FINAL,PROXY")
+    assert rendered.included == 2 and rendered.omitted == 1
+
+
+def test_shadowrocket_config_sanitizes_group_and_rejects_unsafe_subscription_name():
+    proxy = {
+        "name": "Node", "type": "ss", "server": "ss.example", "port": 8388,
+        "cipher": "aes-256-gcm", "password": "password", "udp": True,
+    }
+    config = _config([proxy])
+    config["proxy-groups"] = [
+        {"name": "PROXY", "type": "select", "proxies": ["AUTO", "流=媒体#"]},
+        {"name": "AUTO", "type": "url-test", "proxies": ["Node"]},
+        {"name": "流=媒体#", "type": "fallback", "proxies": ["Node"]},
+    ]
+    config["rules"] = ["DOMAIN,video.example,流=媒体#", "MATCH,PROXY"]
+    profile = render_shadowrocket_config(config).content
+    assert "流 媒体 = fallback, conduit, use=true, policy-regex-filter=^@流_媒体:" in profile
+    assert "PROXY = select, AUTO, 流 媒体" in profile
+    assert "DOMAIN,video.example,流 媒体" in profile
+    with pytest.raises(ValueError, match="节点订阅名称非法"):
+        render_shadowrocket_config(config, subscription_name="bad,name")
 
 
 def test_surge_profile_maps_nodes_groups_rules_and_reports_omissions():
