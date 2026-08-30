@@ -423,8 +423,13 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
         lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
         return {"name": name, "count": len(lines), "sample": lines[:80], "url": url}
 
-    @app.get("/sub/clash")
-    def sub_clash(token: str = "", full: bool = False):
+    def _subscription_response(
+        token: str,
+        *,
+        full: bool,
+        stash_tailscale: bool,
+        filename: str,
+    ) -> Response:
         # 订阅产物含明文节点凭据 → 必须 token（常量时间比较）。私网/tailnet 直连兜底在 render 内置。
         if not secrets.compare_digest(token, store.get_sub_token()):
             raise HTTPException(403, "bad token")
@@ -440,6 +445,7 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
                 policy=_policy(),
                 source_names=source_names,
                 source_proxy_nameservers=source_proxy_nameservers,
+                stash_tailscale=stash_tailscale,
             )
         except SourceDnsConflict as exc:
             raise HTTPException(409, str(exc))
@@ -448,10 +454,29 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
             cfg,
             media_type="text/yaml; charset=utf-8",
             headers={
-                "content-disposition": "attachment; filename=conduit.yaml",
+                "content-disposition": f"attachment; filename={filename}",
                 "profile-update-interval": "24",  # 小时
                 "access-control-allow-origin": "*",  # 防客户端在 webview 里 fetch 被 CORS 拦
             },
+        )
+
+    @app.get("/sub/clash")
+    def sub_clash(token: str = "", full: bool = False):
+        return _subscription_response(
+            token,
+            full=full,
+            stash_tailscale=False,
+            filename="conduit.yaml",
+        )
+
+    @app.get("/sub/stash")
+    def sub_stash(token: str = ""):
+        # Stash 自管 Apple 平台上的 TUN/DNS；这里保持 pure 配置，只追加原生 Tailscale 节点。
+        return _subscription_response(
+            token,
+            full=False,
+            stash_tailscale=True,
+            filename="conduit-stash.yaml",
         )
 
     @app.get("/", response_class=HTMLResponse)
@@ -801,9 +826,11 @@ async function setTag(aid,region,quarantined){
 async function loadSub(){
   const r=await j('/api/sub-token');
   const base=location.origin+'/sub/clash?token='+encodeURIComponent(r.token);
+  const stash=location.origin+'/sub/stash?token='+encodeURIComponent(r.token);
   document.getElementById('sub').replaceChildren(
     el('div','clash 订阅（导入 clash-verge / mihomo）：'), el('code',base),
-    el('div','带 DNS/TUN：'), el('code',base+'&full=1'));
+    el('div','带 DNS/TUN：'), el('code',base+'&full=1'),
+    el('div','Stash 订阅（内置 Tailscale，导入后在节点菜单完成登录）：'), el('code',stash));
 }
 let POL=null, TARGETS=[], CATS={}, CUSTOM=false, EDIT=false, RULES=[];
 const MKEYS=['domain_suffix','domain','ip_cidr','process_name','dst_port','geosite','geoip','rule_set'];

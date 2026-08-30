@@ -40,6 +40,7 @@ _BASELINE_DIRECT = [
 _RESERVED_NAMES = {"DIRECT", "REJECT", "REJECT-DROP", "PASS", "GLOBAL", "COMPATIBLE", "PROXY"}
 _CORE_KEYS = {"name", "type", "server", "port"}
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+_STASH_TAILSCALE_NAME = "TAILSCALE"
 
 
 def _short(aid_value: str) -> str:
@@ -257,6 +258,7 @@ def build_subscription(
     policy: dict | None = None,
     source_names: dict[str, str] | None = None,
     source_proxy_nameservers: dict[str, list[str]] | None = None,
+    stash_tailscale: bool = False,
 ) -> dict:
     """订阅用配置：标准 clash 骨架 + 按 region 分组的 proxy-groups + 规则；`full=True` 再加 dns+tun。
 
@@ -270,6 +272,9 @@ def build_subscription(
 
     tags：`{access_id: {"region": override|None, "quarantined": bool}}`（service 传入）。隔离的剔除；
     region 优先用 override，否则 `region_of(raw_name)`。标签按 access_id 存 → 跟着节点走，不跟订阅。
+
+    stash_tailscale：加入一个 Stash 专用的内置 Tailscale 节点。节点不携带 auth-key、hostname 或
+    tailnet 地址，由每台 Stash 客户端在应用内交互认证，避免把身份或拓扑事实写进订阅。
     """
     tags = tags or {}
     policy = policy or DEFAULT_POLICY
@@ -352,8 +357,14 @@ def build_subscription(
         region = (t.get("region") or "").strip() or region_of(n.raw_name)
         active.append((n, region))
 
+    client_proxies = (
+        [{"name": _STASH_TAILSCALE_NAME, "type": "tailscale"}]
+        if stash_tailscale
+        else []
+    )
+    client_proxy_names = {proxy["name"] for proxy in client_proxies}
     if not active:  # 无可用节点：给个合法的全直连配置，别产出坏订阅
-        cfg["proxies"] = []
+        cfg["proxies"] = client_proxies
         cfg["rules"] = ["MATCH,DIRECT"]
         return cfg
 
@@ -376,10 +387,12 @@ def build_subscription(
     nodes_only = [n for n, _ in active]
     names = _assign_names(
         nodes_only,
-        extra_reserved={"AUTO", "AUTO-FAST", *region_order},
+        extra_reserved={"AUTO", "AUTO-FAST", *region_order} | client_proxy_names,
         source_names=source_names,
     )
-    cfg["proxies"] = [_node_to_proxy(n, nm) for n, nm in zip(nodes_only, names)]
+    cfg["proxies"] = client_proxies + [
+        _node_to_proxy(n, nm) for n, nm in zip(nodes_only, names)
+    ]
 
     by_region: dict[str, list[str]] = {}
     for (_, r), nm in zip(active, names):
@@ -424,6 +437,7 @@ def render_subscription(
     policy: dict | None = None,
     source_names: dict[str, str] | None = None,
     source_proxy_nameservers: dict[str, list[str]] | None = None,
+    stash_tailscale: bool = False,
 ) -> str:
     return yaml.safe_dump(
         build_subscription(
@@ -434,6 +448,7 @@ def render_subscription(
             policy,
             source_names,
             source_proxy_nameservers,
+            stash_tailscale,
         ),
         sort_keys=False,
         allow_unicode=True,

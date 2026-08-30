@@ -51,6 +51,8 @@ def test_page_exposes_subscription_priority_controls():
     assert "dropEffect==='none'" in page  # 鼠标 Esc / 无效落点取消时恢复原序
     assert "/api/subscriptions/order" in page
     assert "客户端刷新订阅后生效" in page
+    assert "/sub/stash?token=" in page
+    assert "内置 Tailscale" in page
 
 
 def test_create_returns_opaque_id_and_lists_name():
@@ -376,6 +378,8 @@ def test_sub_clash_requires_token():
     c = _client()
     assert c.get("/sub/clash").status_code == 403
     assert c.get("/sub/clash", params={"token": "wrong"}).status_code == 403
+    assert c.get("/sub/stash").status_code == 403
+    assert c.get("/sub/stash", params={"token": "wrong"}).status_code == 403
 
 
 def test_sub_clash_pure_has_proxies_groups_and_creds():
@@ -391,6 +395,39 @@ def test_sub_clash_pure_has_proxies_groups_and_creds():
     assert cfg["rules"][-1] == "MATCH,PROXY"
     assert "tun" not in cfg and "dns" not in cfg  # 纯净版不带实例设置
     assert "pass1" in r.text  # 订阅含明文节点凭据（ss password）→ token 保护是对的
+
+
+def test_sub_stash_adds_secretless_native_tailscale_only_to_stash():
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    token = c.get("/api/sub-token").json()["token"]
+
+    clash = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
+    response = c.get("/sub/stash", params={"token": token})
+    stash = yaml.safe_load(response.text)
+
+    assert not any(proxy["type"] == "tailscale" for proxy in clash["proxies"])
+    assert stash["proxies"][0] == {"name": "TAILSCALE", "type": "tailscale"}
+    assert not any(key in stash["proxies"][0] for key in ("auth-key", "hostname", "control-url"))
+    assert "TAILSCALE" not in {
+        member
+        for group in stash["proxy-groups"]
+        for member in group.get("proxies", [])
+    }
+    assert stash["rules"] == clash["rules"]
+    assert "tun" not in stash and "dns" not in stash
+    assert response.headers.get("content-disposition") == (
+        "attachment; filename=conduit-stash.yaml"
+    )
+
+
+def test_sub_stash_keeps_tailscale_node_when_upstream_pool_is_empty():
+    c = _client()
+    token = c.get("/api/sub-token").json()["token"]
+    cfg = yaml.safe_load(c.get("/sub/stash", params={"token": token}).text)
+    assert cfg["proxies"] == [{"name": "TAILSCALE", "type": "tailscale"}]
+    assert cfg["rules"] == ["MATCH,DIRECT"]
 
 
 def test_sub_clash_uses_subscription_priority_prefix_and_stable_region_order():
