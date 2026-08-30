@@ -27,7 +27,7 @@ uvicorn --factory service.app:make_app   # DB 路径用 CONDUIT_DB，默认 cond
 ```
 打开 http://127.0.0.1:8000 ：建订阅（选择链接 / 文件 / 文本来源）→ 拖动订阅设置优先级 →
 导入/刷新 → 看节点池 → 给节点打地区标签 → 编辑分流策略 → 复制订阅链接导进
-Clash Verge/Mihomo、Shadowrocket 或 Surge。
+Clash Verge/Mihomo、Stash、Shadowrocket 或 Surge。
 
 ## 现在有什么
 **订阅 / 节点**
