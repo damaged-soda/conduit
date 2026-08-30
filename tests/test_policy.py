@@ -47,6 +47,14 @@ def test_subscription_rule_order():
     assert 0 < rules.index("GEOSITE,cn,DIRECT") < len(rules) - 1
 
 
+def test_stash_tailscale_name_is_reserved_from_upstream_nodes():
+    cfg = build_subscription([_node("TAILSCALE")], {}, stash_tailscale=True)
+    names = [proxy["name"] for proxy in cfg["proxies"]]
+    assert names[0] == "TAILSCALE"
+    assert len(names) == len(set(names)) == 2
+    assert cfg["proxies"][1]["type"] == "trojan"
+
+
 def test_explicit_matchers():
     pol = {"routes": [{"to": "DIRECT", "domain_suffix": ["tailscale.com"], "domain": ["derp.x"],
                        "ip_cidr": ["123.57.92.37/32"], "process_name": ["ssh"], "dst_port": ["22"]}], "final": "PROXY"}

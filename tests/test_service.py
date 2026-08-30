@@ -51,6 +51,8 @@ def test_page_exposes_subscription_priority_controls():
     assert "dropEffect==='none'" in page  # 鼠标 Esc / 无效落点取消时恢复原序
     assert "/api/subscriptions/order" in page
     assert "客户端刷新订阅后生效" in page
+    assert "/sub/stash?token=" in page
+    assert "内置 Tailscale" in page
 
 
 def test_create_returns_opaque_id_and_lists_name():
@@ -379,6 +381,8 @@ def test_sub_clash_requires_token():
     assert c.get("/sub/shadowrocket").status_code == 403
     assert c.get("/sub/shadowrocket-config", params={"token": "wrong"}).status_code == 403
     assert c.get("/sub/surge", params={"token": "wrong"}).status_code == 403
+    assert c.get("/sub/stash").status_code == 403
+    assert c.get("/sub/stash", params={"token": "wrong"}).status_code == 403
 
 
 def test_sub_clash_pure_has_proxies_groups_and_creds():
@@ -448,6 +452,7 @@ def test_shadowrocket_and_surge_subscription_endpoints():
 def test_subscription_page_lists_all_client_links():
     page = _client().get("/").text
     assert "/sub/clash" in page
+    assert "/sub/stash" in page
     assert "/sub/shadowrocket" in page
     assert "/sub/shadowrocket-config" in page
     assert "导入后命名为 conduit" in page
@@ -503,6 +508,39 @@ def test_shadowrocket_config_rejects_unsafe_subscription_name():
     )
     assert response.status_code == 400
     assert response.json()["detail"] == "Shadowrocket 节点订阅名称非法"
+
+
+def test_sub_stash_adds_secretless_native_tailscale_only_to_stash():
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    token = c.get("/api/sub-token").json()["token"]
+
+    clash = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
+    response = c.get("/sub/stash", params={"token": token})
+    stash = yaml.safe_load(response.text)
+
+    assert not any(proxy["type"] == "tailscale" for proxy in clash["proxies"])
+    assert stash["proxies"][0] == {"name": "TAILSCALE", "type": "tailscale"}
+    assert not any(key in stash["proxies"][0] for key in ("auth-key", "hostname", "control-url"))
+    assert "TAILSCALE" not in {
+        member
+        for group in stash["proxy-groups"]
+        for member in group.get("proxies", [])
+    }
+    assert stash["rules"] == clash["rules"]
+    assert "tun" not in stash and "dns" not in stash
+    assert response.headers.get("content-disposition") == (
+        "attachment; filename=conduit-stash.yaml"
+    )
+
+
+def test_sub_stash_keeps_tailscale_node_when_upstream_pool_is_empty():
+    c = _client()
+    token = c.get("/api/sub-token").json()["token"]
+    cfg = yaml.safe_load(c.get("/sub/stash", params={"token": token}).text)
+    assert cfg["proxies"] == [{"name": "TAILSCALE", "type": "tailscale"}]
+    assert cfg["rules"] == ["MATCH,DIRECT"]
 
 
 def test_sub_clash_uses_subscription_priority_prefix_and_stable_region_order():

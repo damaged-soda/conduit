@@ -52,8 +52,11 @@ Clash Verge/Mihomo、Shadowrocket 或 Surge。
 - `GET/PUT/DELETE /api/policy`、`GET /api/categories`（geosite/geoip 白名单）、`GET /api/ruleset?kind=&name=`（看类别里匹配啥）
 - 页面规则区可只读/编辑（改名/目标下拉/增删匹配/排序/改兜底/存/恢复默认）
 
-**订阅产物**
+**订阅产物**（给客户端导入）
 - `GET /sub/clash?token=&full=`：`pure` = proxies + 地区分组 + 规则；`full=1` 再加 fake-ip dns + tun（IPv6 接管 + default-nameserver，见根 [CONSTRAINTS.md](../CONSTRAINTS.md) 「full 模式必须项」）
+- `GET /sub/stash?token=`：Stash 专用 pure 配置；在相同节点、分组和规则上追加一个不含
+  `auth-key`/hostname/tailnet 地址的原生 `type: tailscale` 节点。首次导入后从该节点菜单进入
+  Tailscale 页面交互登录；普通 `/sub/clash` 不含 Stash 专用字段。
 - `GET /sub/shadowrocket?token=`：Shadowrocket 常用的整份 base64 URI 行**节点订阅**；支持导出
   ss/vmess/trojan/vless/hysteria/hysteria2，无法可靠映射的节点跳过。节点名会带 `@地区:` 前缀，
   供完整配置按 conduit 的地区标签精确分组。
