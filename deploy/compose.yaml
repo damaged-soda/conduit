@@ -29,6 +29,9 @@ services:
       # 具体 tailnet 名（见 service/app.py _mesh_domain_suffixes）。
       CONDUIT_MESH_DOMAIN_SUFFIXES: ${CONDUIT_MESH_DOMAIN_SUFFIXES:-ts.net}
       CONDUIT_MESH_DNS_SERVER: ${CONDUIT_MESH_DNS_SERVER:-100.100.100.100}
+      # mesh 守护进程必须绕过本机 mihomo TUN；否则它发往 peer/DERP 真实公网
+      # endpoint 的底层包会再次进入 TUN，形成路径振荡。调用方可覆盖或置空。
+      CONDUIT_MESH_PROCESS_NAMES: ${CONDUIT_MESH_PROCESS_NAMES-tailscaled}
     volumes:
       - conduit-data:/data            # DB 持久化（含明文凭据，留在 rig 磁盘，别外泄）
     ports:

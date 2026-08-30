@@ -20,6 +20,7 @@ import yaml  # 硬依赖：缺 PyYAML 直接失败，不静默跳过（装 `.[de
 HERE = pathlib.Path(__file__).parent
 GOOD = HERE / "fixtures" / "mihomo.min.yaml"
 BAD = HERE / "fixtures" / "mihomo.bad.yaml"
+DEPLOY_COMPOSE = HERE.parent / "deploy" / "compose.yaml"
 
 # 调用方喂入的结构化 direct-list（占位，对应 good 夹具），覆盖各类型。
 DIRECT = {
@@ -272,6 +273,13 @@ def test_bad_fixture_is_caught():
     assert any(v.values()), "坏夹具竟然没被任何不变量抓到——检查形同虚设"
     for key in ("direct_first", "rule_targets", "group_members"):
         assert v[key], f"检查 {key} 没抓到坏夹具里它应抓的违规"
+
+
+def test_deploy_compose_wires_default_mesh_process_bypass():
+    compose = load(DEPLOY_COMPOSE)
+    env = compose["services"]["conduit"]["environment"]
+    # 无环境变量时为 Tailscale 守护进程兜底；显式空值仍可禁用（`${VAR-default}` 无冒号）。
+    assert env["CONDUIT_MESH_PROCESS_NAMES"] == "${CONDUIT_MESH_PROCESS_NAMES-tailscaled}"
 
 
 def test_source_dns_policy_requires_global_proxy_dns():
