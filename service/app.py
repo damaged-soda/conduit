@@ -20,13 +20,20 @@ import tomllib
 from typing import Callable
 
 import yaml
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from conduit.client_subscriptions import (
+    ClientSubscription,
+    NoCompatibleProxies,
+    render_shadowrocket_config,
+    render_shadowrocket_subscription,
+    render_surge_subscription,
+)
 from conduit.ingest import extract_proxy_server_nameservers, normalize
 from conduit.policy import DEFAULT_POLICY, GEOIP_CATALOG, GEOSITE_CATALOG
-from conduit.render import SourceDnsConflict, render_subscription, subscription_rules
+from conduit.render import SourceDnsConflict, build_subscription, subscription_rules
 from conduit.tags import normalize_region, region_of, region_sort_key
 from conduit.udp import node_supports_udp
 
@@ -423,21 +430,19 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
         lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
         return {"name": name, "count": len(lines), "sample": lines[:80], "url": url}
 
-    def _subscription_response(
-        token: str,
-        *,
-        full: bool,
-        stash_tailscale: bool,
-        filename: str,
-    ) -> Response:
-        # 订阅产物含明文节点凭据 → 必须 token（常量时间比较）。私网/tailnet 直连兜底在 render 内置。
+    def _check_sub_token(token: str) -> None:
+        # 所有订阅产物都含明文节点凭据 → 必须 token（常量时间比较）。
         if not secrets.compare_digest(token, store.get_sub_token()):
             raise HTTPException(403, "bad token")
+
+    def _subscription_config(
+        *, full: bool = False, stash_tailscale: bool = False
+    ) -> dict:
         subscriptions = store.list_subscriptions()
         source_names = {sub["id"]: sub["name"] for sub in subscriptions}
         nodes, source_proxy_nameservers = store.render_snapshot()
         try:
-            cfg = render_subscription(
+            return build_subscription(
                 nodes,
                 {},
                 full=full,
@@ -449,6 +454,36 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
             )
         except SourceDnsConflict as exc:
             raise HTTPException(409, str(exc))
+
+    def _client_headers(filename: str, rendered: ClientSubscription) -> dict[str, str]:
+        return {
+            "content-disposition": f"attachment; filename={filename}",
+            "profile-update-interval": "24",
+            "access-control-allow-origin": "*",
+            "x-conduit-compatible-nodes": str(rendered.included),
+            "x-conduit-omitted-nodes": str(rendered.omitted),
+        }
+
+    def _managed_url(request: Request) -> str:
+        # 生产由 Tailscale Serve 终止 HTTPS；采用它转发的协议，避免 profile 把更新地址
+        # 固化成容器内看到的 http://。只影响返回给当前 token 持有者的自引用 URL。
+        forwarded = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip()
+        scheme = forwarded if forwarded in {"http", "https"} else request.url.scheme
+        return str(request.url.replace(scheme=scheme))
+
+    def _yaml_subscription_response(
+        token: str,
+        *,
+        full: bool,
+        stash_tailscale: bool,
+        filename: str,
+    ) -> Response:
+        _check_sub_token(token)
+        cfg = yaml.safe_dump(
+            _subscription_config(full=full, stash_tailscale=stash_tailscale),
+            sort_keys=False,
+            allow_unicode=True,
+        )
         # 标准订阅响应头：让 clash-verge/mihomo 当订阅文件处理（否则浏览器直接显示、客户端导入失败）。
         return Response(
             cfg,
@@ -462,7 +497,7 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
 
     @app.get("/sub/clash")
     def sub_clash(token: str = "", full: bool = False):
-        return _subscription_response(
+        return _yaml_subscription_response(
             token,
             full=full,
             stash_tailscale=False,
@@ -472,11 +507,60 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
     @app.get("/sub/stash")
     def sub_stash(token: str = ""):
         # Stash 自管 Apple 平台上的 TUN/DNS；这里保持 pure 配置，只追加原生 Tailscale 节点。
-        return _subscription_response(
+        return _yaml_subscription_response(
             token,
             full=False,
             stash_tailscale=True,
             filename="conduit-stash.yaml",
+        )
+
+    @app.get("/sub/shadowrocket")
+    def sub_shadowrocket(token: str = ""):
+        _check_sub_token(token)
+        try:
+            rendered = render_shadowrocket_subscription(_subscription_config())
+        except NoCompatibleProxies as exc:
+            raise HTTPException(422, str(exc))
+        return Response(
+            rendered.content,
+            media_type="text/plain; charset=utf-8",
+            headers=_client_headers("conduit-shadowrocket.txt", rendered),
+        )
+
+    @app.get("/sub/shadowrocket-config")
+    def sub_shadowrocket_config(
+        request: Request, token: str = "", subscription_name: str = "conduit"
+    ):
+        _check_sub_token(token)
+        try:
+            rendered = render_shadowrocket_config(
+                _subscription_config(),
+                subscription_name=subscription_name,
+                update_url=_managed_url(request),
+            )
+        except NoCompatibleProxies as exc:
+            raise HTTPException(422, str(exc))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return Response(
+            rendered.content,
+            media_type="text/plain; charset=utf-8",
+            headers=_client_headers("conduit-shadowrocket.conf", rendered),
+        )
+
+    @app.get("/sub/surge")
+    def sub_surge(request: Request, token: str = ""):
+        _check_sub_token(token)
+        try:
+            rendered = render_surge_subscription(
+                _subscription_config(), managed_url=_managed_url(request)
+            )
+        except NoCompatibleProxies as exc:
+            raise HTTPException(422, str(exc))
+        return Response(
+            rendered.content,
+            media_type="text/plain; charset=utf-8",
+            headers=_client_headers("conduit-surge.conf", rendered),
         )
 
     @app.get("/", response_class=HTMLResponse)
@@ -825,12 +909,17 @@ async function setTag(aid,region,quarantined){
 
 async function loadSub(){
   const r=await j('/api/sub-token');
-  const base=location.origin+'/sub/clash?token='+encodeURIComponent(r.token);
-  const stash=location.origin+'/sub/stash?token='+encodeURIComponent(r.token);
+  const encodedToken=encodeURIComponent(r.token);
+  const q='?token='+encodedToken;
+  const clash=location.origin+'/sub/clash'+q;
+  const stash=location.origin+'/sub/stash?token='+encodedToken;
   document.getElementById('sub').replaceChildren(
-    el('div','clash 订阅（导入 clash-verge / mihomo）：'), el('code',base),
-    el('div','带 DNS/TUN：'), el('code',base+'&full=1'),
-    el('div','Stash 订阅（内置 Tailscale，导入后在节点菜单完成登录）：'), el('code',stash));
+    el('div','Clash/Mihomo：'), el('code',clash),
+    el('div','Clash/Mihomo（带 DNS/TUN）：'), el('code',clash+'&full=1'),
+    el('div','Stash（内置 Tailscale，导入后在节点菜单完成登录）：'), el('code',stash),
+    el('div','Shadowrocket 节点（导入后命名为 conduit）：'), el('code',location.origin+'/sub/shadowrocket'+q),
+    el('div','Shadowrocket 配置（地区组 / AUTO / 分流规则）：'), el('code',location.origin+'/sub/shadowrocket-config'+q),
+    el('div','Surge：'), el('code',location.origin+'/sub/surge'+q));
 }
 let POL=null, TARGETS=[], CATS={}, CUSTOM=false, EDIT=false, RULES=[];
 const MKEYS=['domain_suffix','domain','ip_cidr','process_name','dst_port','geosite','geoip','rule_set'];

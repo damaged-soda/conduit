@@ -27,7 +27,7 @@ uvicorn --factory service.app:make_app   # DB 路径用 CONDUIT_DB，默认 cond
 ```
 打开 http://127.0.0.1:8000 ：建订阅（选择链接 / 文件 / 文本来源）→ 拖动订阅设置优先级 →
 导入/刷新 → 看节点池 → 给节点打地区标签 → 编辑分流策略 → 复制订阅链接导进
-clash-verge/mihomo。
+Clash Verge/Mihomo、Shadowrocket 或 Surge。
 
 ## 现在有什么
 **订阅 / 节点**
@@ -59,6 +59,19 @@ clash-verge/mihomo。
   `*.ts.net`、`100.64.0.0/10` 与 `fd7a:115c:a1e0::/48` 会在通用 DIRECT 兜底之前显式进入
   `TAILNET`；首次导入后从该节点菜单进入 Tailscale 页面交互登录。普通 `/sub/clash` 不含
   Stash 专用字段或规则。
+- `GET /sub/shadowrocket?token=`：Shadowrocket 常用的整份 base64 URI 行**节点订阅**；支持导出
+  ss/vmess/trojan/vless/hysteria/hysteria2，无法可靠映射的节点跳过。节点名会带 `@地区:` 前缀，
+  供完整配置按 conduit 的地区标签精确分组。
+- `GET /sub/shadowrocket-config?token=&subscription_name=conduit`：Shadowrocket 完整配置
+  （`[General]` / `[Proxy Group]` / `[Rule]`），含地区组、`AUTO` 和与 Clash/Surge 同源的分流规则。
+  Shadowrocket 把节点订阅与配置分开管理：先导入上一条节点 URL，并把订阅名称设为
+  `subscription_name`（默认 `conduit`），再导入本配置 URL；两者之后各自更新。配置通过
+  `use=true` 引用同名节点订阅，而不是复制一份节点凭据。Shadowrocket 当前未文档化的
+  `PROCESS-NAME` 不会输出；IPv6 网段统一使用其文档化的 `IP-CIDR`。
+- `GET /sub/surge?token=`：完整 Surge managed profile（`[General]` / `[Proxy]` / `[Proxy Group]` /
+  `[Rule]`）；支持 Surge 原生的 ss/vmess/trojan/hysteria2。VLESS、Hysteria 1 以及 Surge 无法表达的
+  传输参数会跳过。客户端接口以 `X-Conduit-Compatible-Nodes` / `X-Conduit-Omitted-Nodes` 报告数量；
+  若没有任何兼容节点则返回 422，避免静默退化为直连。
 - Clash 来源若自带 `dns.proxy-server-nameserver`，导入会把它作为 secret 元数据随当前快照保存；
   `full=1` 按该来源实际节点的精确域名生成 `proxy-server-nameserver-policy`，不会接管其他订阅或普通
   目标域名。其他订阅 DNS 字段仍全部丢弃；相同节点域名声明不同专用 DNS 时，整份 `full=1`

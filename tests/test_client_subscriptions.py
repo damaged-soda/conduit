@@ -1,0 +1,352 @@
+"""Shadowrocket / Surge 客户端订阅格式。"""
+
+from __future__ import annotations
+
+import base64
+import pathlib
+import sys
+
+import pytest
+
+HERE = pathlib.Path(__file__).parent
+sys.path.insert(0, str(HERE.parent))
+
+from conduit.client_subscriptions import (  # noqa: E402
+    NoCompatibleProxies,
+    render_shadowrocket_config,
+    render_shadowrocket_subscription,
+    render_surge_subscription,
+)
+from conduit.ingest import normalize  # noqa: E402
+
+
+def _config(proxies: list[dict]) -> dict:
+    names = [proxy["name"] for proxy in proxies]
+    return {
+        "proxies": proxies,
+        "proxy-groups": [
+            {"name": "PROXY", "type": "select", "proxies": ["AUTO", "HK", "US"]},
+            {"name": "AUTO", "type": "fallback", "proxies": ["AUTO-FAST", *names]},
+            {"name": "AUTO-FAST", "type": "url-test", "proxies": names},
+            {"name": "HK", "type": "fallback", "proxies": names[:2]},
+            {"name": "US", "type": "fallback", "proxies": names[2:]},
+        ],
+        "rule-providers": {
+            "ai": {
+                "url": (
+                    "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/"
+                    "geosite/category-ai-!cn.mrs"
+                )
+            }
+        },
+        "rules": [
+            "RULE-SET,ai,US",
+            "GEOSITE,cn,DIRECT",
+            "GEOIP,CN,DIRECT,no-resolve",
+            "IP-CIDR6,fd00::/8,DIRECT,no-resolve",
+            "PROCESS-NAME,ssh,DIRECT",
+            "DST-PORT,22,DIRECT",
+            "MATCH,PROXY",
+        ],
+    }
+
+
+def test_shadowrocket_is_base64_uri_feed_and_round_trips_supported_protocols():
+    proxies = [
+        {
+            "name": "SS 香港",
+            "type": "ss",
+            "server": "ss.example",
+            "port": 8388,
+            "cipher": "aes-256-gcm",
+            "password": "p:a@ss",
+            "udp": True,
+        },
+        {
+            "name": "VM WS",
+            "type": "vmess",
+            "server": "vm.example",
+            "port": 443,
+            "uuid": "0233d11c-15a4-47d3-ade3-48ffca0ce119",
+            "alterId": 0,
+            "cipher": "auto",
+            "network": "ws",
+            "tls": True,
+            "servername": "vm.example",
+            "ws-opts": {"path": "/v2", "headers": {"Host": "cdn.example"}},
+            "udp": True,
+        },
+        {
+            "name": "Trojan",
+            "type": "trojan",
+            "server": "tj.example",
+            "port": 443,
+            "password": "tj/pass",
+            "sni": "tj.example",
+            "udp": True,
+        },
+        {
+            "name": "VLESS Reality",
+            "type": "vless",
+            "server": "vl.example",
+            "port": 443,
+            "uuid": "uuid-vless",
+            "tls": True,
+            "servername": "www.example",
+            "client-fingerprint": "chrome",
+            "reality-opts": {"public-key": "pub", "short-id": "abcd"},
+            "udp": True,
+        },
+        {
+            "name": "HY2",
+            "type": "hysteria2",
+            "server": "hy.example",
+            "port": 443,
+            "password": "hy2-pass",
+            "sni": "hy.example",
+            "obfs": "salamander",
+            "obfs-password": "obfs-pass",
+            "udp": True,
+        },
+    ]
+
+    rendered = render_shadowrocket_subscription(_config(proxies))
+    raw = base64.b64decode(rendered.content).decode()
+    assert [line.split(":", 1)[0] for line in raw.splitlines()] == [
+        "ss", "vmess", "trojan", "vless", "hysteria2"
+    ]
+    round_tripped = normalize(raw, "uri", "shadowrocket")
+    assert {node.raw_name for node in round_tripped} == {
+        "@HK:SS 香港", "@HK:VM WS", "@US:Trojan", "@US:VLESS Reality", "@US:HY2"
+    }
+    by_name = {node.raw_name: node for node in round_tripped}
+    assert by_name["@HK:SS 香港"].params["password"] == "p:a@ss"
+    assert by_name["@HK:VM WS"].params["ws-opts"] == {
+        "path": "/v2", "headers": {"Host": "cdn.example"}
+    }
+    assert by_name["@US:VLESS Reality"].params["reality-opts"] == {
+        "public-key": "pub", "short-id": "abcd"
+    }
+    assert rendered.included == 5 and rendered.omitted == 0
+
+
+def test_shadowrocket_skips_unmappable_nodes_and_rejects_empty_output():
+    unsupported = {"name": "SOCKS", "type": "socks5", "server": "s", "port": 1080}
+    supported = {
+        "name": "SS", "type": "ss", "server": "s", "port": 8388,
+        "cipher": "aes-128-gcm", "password": "p", "udp": True,
+    }
+    rendered = render_shadowrocket_subscription(_config([unsupported, supported]))
+    assert rendered.included == 1 and rendered.omitted == 1
+    with pytest.raises(NoCompatibleProxies):
+        render_shadowrocket_subscription(_config([unsupported]))
+
+
+def test_shadowrocket_ss_2022_uses_plain_sip002_userinfo():
+    proxy = {
+        "name": "SS 2022",
+        "type": "ss",
+        "server": "s.example",
+        "port": 8388,
+        "cipher": "2022-blake3-aes-256-gcm",
+        "password": "c2VjcmV0L2tleQ==",
+        "udp": True,
+    }
+    rendered = render_shadowrocket_subscription(_config([proxy]))
+    uri = base64.b64decode(rendered.content).decode().strip()
+    assert uri.startswith("ss://2022-blake3-aes-256-gcm:c2VjcmV0L2tleQ%3D%3D@s.example:8388/")
+    node = normalize(uri, "uri", "shadowrocket")[0]
+    assert node.params["cipher"] == proxy["cipher"]
+    assert node.params["password"] == proxy["password"]
+
+
+def test_shadowrocket_config_references_node_feed_and_maps_groups_and_rules():
+    proxies = [
+        {
+            "name": "HK node", "type": "ss", "server": "hk.example", "port": 8388,
+            "cipher": "aes-256-gcm", "password": "password", "udp": True,
+        },
+        {
+            "name": "unsupported", "type": "socks5", "server": "s.example", "port": 1080,
+        },
+        {
+            "name": "US node", "type": "trojan", "server": "us.example", "port": 443,
+            "password": "password", "sni": "us.example", "udp": True,
+        },
+    ]
+    rendered = render_shadowrocket_config(
+        _config(proxies),
+        subscription_name="conduit",
+        update_url="https://conduit.example/sub/shadowrocket-config?token=secret",
+    )
+    profile = rendered.content
+    assert "update-url = https://conduit.example/sub/shadowrocket-config?token=secret" in profile
+    assert (
+        "HK = fallback,conduit,use=true,policy-regex-filter=^@HK:,"
+        "interval=60,timeout=2"
+    ) in profile
+    assert "US = fallback,conduit,use=true,policy-regex-filter=^@US:" in profile
+    assert "AUTO = url-test,conduit,use=true" in profile
+    assert "PROXY = select,AUTO,HK,US" in profile
+    assert "/geosite/category-ai-!cn.list,US" in profile
+    assert "/geoip/cn.list,DIRECT" in profile
+    assert "/geoip/cn.list,DIRECT,no-resolve" not in profile
+    assert "IP-CIDR,fd00::/8,DIRECT,no-resolve" in profile
+    assert "IP-CIDR6,fd00::/8" not in profile
+    assert "PROCESS-NAME" not in profile
+    assert "DST-PORT,22,DIRECT" in profile
+    assert profile.rstrip().endswith("FINAL,PROXY")
+    assert rendered.included == 2 and rendered.omitted == 1
+
+
+def test_shadowrocket_config_sanitizes_group_and_rejects_unsafe_subscription_name():
+    proxy = {
+        "name": "Node", "type": "ss", "server": "ss.example", "port": 8388,
+        "cipher": "aes-256-gcm", "password": "password", "udp": True,
+    }
+    config = _config([proxy])
+    config["proxy-groups"] = [
+        {"name": "PROXY", "type": "select", "proxies": ["AUTO", "流=媒体#"]},
+        {"name": "AUTO", "type": "url-test", "proxies": ["Node"]},
+        {"name": "流=媒体#", "type": "fallback", "proxies": ["Node"]},
+    ]
+    config["rules"] = ["DOMAIN,video.example,流=媒体#", "MATCH,PROXY"]
+    profile = render_shadowrocket_config(config).content
+    assert "流 媒体 = fallback,conduit,use=true,policy-regex-filter=^@流_媒体:" in profile
+    assert "PROXY = select,AUTO,流 媒体" in profile
+    assert "DOMAIN,video.example,流 媒体" in profile
+    with pytest.raises(ValueError, match="节点订阅名称非法"):
+        render_shadowrocket_config(config, subscription_name="bad,name")
+
+
+def test_surge_profile_maps_nodes_groups_rules_and_reports_omissions():
+    proxies = [
+        {
+            "name": "SS,HK",
+            "type": "ss",
+            "server": "ss.example",
+            "port": 8388,
+            "cipher": "aes-256-gcm",
+            "password": 'p,a"b',
+            "udp": True,
+        },
+        {
+            "name": "Trojan WS",
+            "type": "trojan",
+            "server": "tj.example",
+            "port": 443,
+            "password": "tjpass",
+            "sni": "tj.example",
+            "network": "ws",
+            "ws-opts": {"path": "/ws", "headers": {"Host": "cdn.example"}},
+            "udp": True,
+        },
+        {
+            "name": "VMess",
+            "type": "vmess",
+            "server": "vm.example",
+            "port": 443,
+            "uuid": "0233d11c-15a4-47d3-ade3-48ffca0ce119",
+            "alterId": 0,
+            "cipher": "auto",
+            "tls": True,
+            "udp": True,
+        },
+        {
+            "name": "Hysteria 2",
+            "type": "hysteria2",
+            "server": "hy.example",
+            "port": 443,
+            "password": "hy-pass",
+            "sni": "hy.example",
+            "down": "100 Mbps",
+            "udp": True,
+        },
+        {
+            "name": "VLESS only",
+            "type": "vless",
+            "server": "vl.example",
+            "port": 443,
+            "uuid": "uuid-vless",
+            "udp": True,
+        },
+    ]
+
+    rendered = render_surge_subscription(
+        _config(proxies), managed_url="https://conduit.example/sub/surge?token=secret"
+    )
+    profile = rendered.content
+    assert profile.startswith(
+        "#!MANAGED-CONFIG https://conduit.example/sub/surge?token=secret "
+        "interval=86400 strict=false"
+    )
+    assert "[General]" in profile and "[Proxy]" in profile
+    assert (
+        'SS HK = ss, ss.example, 8388, encrypt-method=aes-256-gcm, '
+        'password="p,a\\\"b", udp-relay=true'
+    ) in profile
+    assert "Trojan WS = trojan, tj.example, 443, password=tjpass, ws=true" in profile
+    assert "VMess = vmess, vm.example, 443" in profile and "vmess-aead=true" in profile
+    assert "Hysteria 2 = hysteria2, hy.example, 443, password=hy-pass" in profile
+    assert "download-bandwidth=100" in profile
+    assert "VLESS only =" not in profile
+    assert "PROXY = select, AUTO, HK, US" in profile
+    group_lines = profile.split("[Proxy Group]\n", 1)[1].split("\n\n", 1)[0].splitlines()
+    assert [line.split(" =", 1)[0] for line in group_lines] == [
+        "HK", "US", "AUTO-FAST", "AUTO", "PROXY"
+    ]
+    assert "/geosite/category-ai-!cn.list,US" in profile
+    assert "/geosite/cn.list,DIRECT" in profile
+    assert "/geoip/cn.list,DIRECT,no-resolve" in profile
+    assert "PROCESS-NAME,ssh,DIRECT" in profile
+    assert "DEST-PORT,22,DIRECT" in profile
+    assert profile.rstrip().endswith("FINAL,PROXY")
+    assert rendered.included == 4 and rendered.omitted == 1
+
+
+def test_surge_escapes_assignment_and_comment_characters_in_names_and_values():
+    proxy = {
+        "name": 'bad=name,#;"\\',
+        "type": "ss",
+        "server": "ss.example",
+        "port": 8388,
+        "cipher": "aes-256-gcm",
+        "password": "key=value#comment",
+        "udp": True,
+    }
+    profile = render_surge_subscription(_config([proxy])).content
+    assert 'bad name = ss, ss.example, 8388' in profile
+    assert 'password="key=value#comment"' in profile
+
+
+def test_surge_sanitizes_region_group_and_rule_target_together():
+    proxy = {
+        "name": "Node",
+        "type": "ss",
+        "server": "ss.example",
+        "port": 8388,
+        "cipher": "aes-256-gcm",
+        "password": "password",
+        "udp": True,
+    }
+    config = _config([proxy])
+    config["proxy-groups"] = [
+        {"name": "PROXY", "type": "select", "proxies": ["AUTO", "流=媒体#"]},
+        {"name": "AUTO", "type": "fallback", "proxies": ["AUTO-FAST", "Node"]},
+        {"name": "AUTO-FAST", "type": "url-test", "proxies": ["Node"]},
+        {"name": "流=媒体#", "type": "fallback", "proxies": ["Node"]},
+    ]
+    config["rules"] = ["DOMAIN,video.example,流=媒体#", "MATCH,PROXY"]
+    profile = render_surge_subscription(config).content
+    assert "流 媒体 = fallback, Node" in profile
+    assert "PROXY = select, AUTO, 流 媒体" in profile
+    assert "DOMAIN,video.example,流 媒体" in profile
+
+
+def test_surge_rejects_snapshot_with_only_unsupported_protocols():
+    proxy = {
+        "name": "VLESS", "type": "vless", "server": "vl.example", "port": 443,
+        "uuid": "uuid", "udp": True,
+    }
+    with pytest.raises(NoCompatibleProxies):
+        render_surge_subscription(_config([proxy]))

@@ -378,6 +378,9 @@ def test_sub_clash_requires_token():
     c = _client()
     assert c.get("/sub/clash").status_code == 403
     assert c.get("/sub/clash", params={"token": "wrong"}).status_code == 403
+    assert c.get("/sub/shadowrocket").status_code == 403
+    assert c.get("/sub/shadowrocket-config", params={"token": "wrong"}).status_code == 403
+    assert c.get("/sub/surge", params={"token": "wrong"}).status_code == 403
     assert c.get("/sub/stash").status_code == 403
     assert c.get("/sub/stash", params={"token": "wrong"}).status_code == 403
 
@@ -395,6 +398,116 @@ def test_sub_clash_pure_has_proxies_groups_and_creds():
     assert cfg["rules"][-1] == "MATCH,PROXY"
     assert "tun" not in cfg and "dns" not in cfg  # 纯净版不带实例设置
     assert "pass1" in r.text  # 订阅含明文节点凭据（ss password）→ token 保护是对的
+
+
+def test_shadowrocket_and_surge_subscription_endpoints():
+    c = _client()
+    sid = _mksub(c, "Vendor")
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    token = c.get("/api/sub-token").json()["token"]
+
+    shadowrocket = c.get("/sub/shadowrocket", params={"token": token})
+    assert shadowrocket.status_code == 200
+    links = base64.b64decode(shadowrocket.text).decode().splitlines()
+    assert [link.split(":", 1)[0] for link in links] == ["ss", "trojan"]
+    assert "%40US%3A%5BVendor%5D%20" in links[0]
+    assert "%40JP%3A%5BVendor%5D%20" in links[1]
+    assert shadowrocket.headers["content-disposition"].endswith("conduit-shadowrocket.txt")
+    assert shadowrocket.headers["x-conduit-compatible-nodes"] == "2"
+    assert shadowrocket.headers["x-conduit-omitted-nodes"] == "0"
+
+    shadowrocket_config = c.get(
+        "/sub/shadowrocket-config",
+        params={"token": token},
+        headers={"x-forwarded-proto": "https"},
+    )
+    assert shadowrocket_config.status_code == 200
+    assert (
+        "update-url = https://testserver/sub/shadowrocket-config?token="
+        in shadowrocket_config.text
+    )
+    assert "US = fallback,conduit,use=true,policy-regex-filter=^@US:" in shadowrocket_config.text
+    assert "JP = fallback,conduit,use=true,policy-regex-filter=^@JP:" in shadowrocket_config.text
+    assert "PROXY = select,AUTO,JP,US" in shadowrocket_config.text
+    assert shadowrocket_config.text.rstrip().endswith("FINAL,PROXY")
+    assert shadowrocket_config.headers["content-disposition"].endswith(
+        "conduit-shadowrocket.conf"
+    )
+    assert shadowrocket_config.headers["x-conduit-compatible-nodes"] == "2"
+
+    surge = c.get(
+        "/sub/surge", params={"token": token}, headers={"x-forwarded-proto": "https"}
+    )
+    assert surge.status_code == 200
+    assert surge.text.startswith("#!MANAGED-CONFIG https://testserver/sub/surge?token=")
+    assert "[Proxy]" in surge.text and "[Proxy Group]" in surge.text and "[Rule]" in surge.text
+    assert "[Vendor] 🇺🇸 US-01 | 1x = ss" in surge.text
+    assert "[Vendor] 🇯🇵 JP-01 = trojan" in surge.text
+    assert surge.headers["content-disposition"].endswith("conduit-surge.conf")
+    assert surge.headers["x-conduit-compatible-nodes"] == "2"
+    direct = c.get("/sub/surge", params={"token": token})
+    assert direct.text.startswith("#!MANAGED-CONFIG http://testserver/sub/surge?token=")
+
+
+def test_subscription_page_lists_all_client_links():
+    page = _client().get("/").text
+    assert "/sub/clash" in page
+    assert "/sub/stash" in page
+    assert "/sub/shadowrocket" in page
+    assert "/sub/shadowrocket-config" in page
+    assert "导入后命名为 conduit" in page
+    assert "/sub/surge" in page
+
+
+def test_surge_fails_closed_when_snapshot_has_no_compatible_nodes():
+    c = _client()
+    sid = _mksub(c)
+    raw = yaml.safe_dump({"proxies": [{
+        "name": "VLESS only",
+        "type": "vless",
+        "server": "vl.example",
+        "port": 443,
+        "uuid": "uuid",
+        "udp": True,
+    }]})
+    assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": raw}).status_code == 200
+    token = c.get("/api/sub-token").json()["token"]
+    response = c.get("/sub/surge", params={"token": token})
+    assert response.status_code == 422
+    assert response.json()["detail"] == "没有可导出的 Surge 兼容节点"
+
+
+def test_shadowrocket_fails_closed_when_snapshot_has_no_compatible_nodes():
+    c = _client()
+    sid = _mksub(c)
+    raw = yaml.safe_dump({"proxies": [{
+        "name": "SOCKS only",
+        "type": "socks5",
+        "server": "socks.example",
+        "port": 1080,
+        "udp": True,
+    }]})
+    assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": raw}).status_code == 200
+    token = c.get("/api/sub-token").json()["token"]
+    response = c.get("/sub/shadowrocket", params={"token": token})
+    assert response.status_code == 422
+    assert response.json()["detail"] == "没有可导出的 Shadowrocket 兼容节点"
+    config_response = c.get("/sub/shadowrocket-config", params={"token": token})
+    assert config_response.status_code == 422
+    assert config_response.json()["detail"] == "没有可导出的 Shadowrocket 兼容节点"
+
+
+def test_shadowrocket_config_rejects_unsafe_subscription_name():
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    token = c.get("/api/sub-token").json()["token"]
+    response = c.get(
+        "/sub/shadowrocket-config",
+        params={"token": token, "subscription_name": "bad,name"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Shadowrocket 节点订阅名称非法"
 
 
 def test_sub_stash_adds_secretless_native_tailscale_only_to_stash():
