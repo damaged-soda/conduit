@@ -80,7 +80,7 @@ mihomo health-check → 指标存储 → 生成器读「过去 N 时长不健康
   仍跨全部节点按延迟选优。标签按 access_id 存 DB、跟节点走。
 - **节点显示名**：服务输出统一使用 `[订阅名] 原节点名`；订阅改名后下一次渲染立即使用新前缀，
   撞名再追加稳定短标识。
-- **服务以订阅形态下发**：`conduit-service` 把节点池+分组+规则渲成 clash 订阅 `GET /sub/clash?token=&full=`；`pure` 纯净、`full` 加 fake-ip dns + tun（full 模式必须项见 [CONSTRAINTS.md](CONSTRAINTS.md)）。clash-verge/mihomo 直接订阅，等价 `fetch→tag→render` 流水线的产物。
+- **服务以订阅形态下发**：`conduit-service` 把节点池+分组+规则渲成 clash 订阅 `GET /sub/clash?token=&full=`；`pure` 纯净、`full` 加 fake-ip dns + tun（full 模式必须项见 [CONSTRAINTS.md](CONSTRAINTS.md)）。clash-verge/mihomo 直接订阅，等价 `fetch→tag→render` 流水线的产物。`GET /sub/stash?token=` 复用 pure 产物并追加不含身份或拓扑事实的 Stash 原生 Tailscale 节点，客户端在应用内交互认证；通用订阅不携带该 Stash 专用扩展。
 - **UDP 资格过滤在 render 期**：导入 / 刷新保留所有可解析节点，`render` 和 `/api/groups` 使用同一套 UDP 资格过滤，旧 DB 里的非 UDP 节点也不会进入订阅输出；`/sub/clash` 每次请求实时渲染，不依赖缓存刷新。
 
 ## 目录

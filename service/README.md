@@ -52,8 +52,11 @@ clash-verge/mihomo。
 - `GET/PUT/DELETE /api/policy`、`GET /api/categories`（geosite/geoip 白名单）、`GET /api/ruleset?kind=&name=`（看类别里匹配啥）
 - 页面规则区可只读/编辑（改名/目标下拉/增删匹配/排序/改兜底/存/恢复默认）
 
-**订阅产物**（给 clash-verge/mihomo 导入）
+**订阅产物**（给客户端导入）
 - `GET /sub/clash?token=&full=`：`pure` = proxies + 地区分组 + 规则；`full=1` 再加 fake-ip dns + tun（IPv6 接管 + default-nameserver，见根 [CONSTRAINTS.md](../CONSTRAINTS.md) 「full 模式必须项」）
+- `GET /sub/stash?token=`：Stash 专用 pure 配置；在相同节点、分组和规则上追加一个不含
+  `auth-key`/hostname/tailnet 地址的原生 `type: tailscale` 节点。首次导入后从该节点菜单进入
+  Tailscale 页面交互登录；普通 `/sub/clash` 不含 Stash 专用字段。
 - Clash 来源若自带 `dns.proxy-server-nameserver`，导入会把它作为 secret 元数据随当前快照保存；
   `full=1` 按该来源实际节点的精确域名生成 `proxy-server-nameserver-policy`，不会接管其他订阅或普通
   目标域名。其他订阅 DNS 字段仍全部丢弃；相同节点域名声明不同专用 DNS 时，整份 `full=1`
