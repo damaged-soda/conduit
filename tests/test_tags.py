@@ -20,7 +20,17 @@ def test_normalize_region():
     assert normalize_region("  jp ") == "JP"
     assert normalize_region("") is None and normalize_region(None) is None
     assert normalize_region("流媒体") == "流媒体"  # 非 ascii 标签保留
-    for bad in ("AUTO", "AUTO-FAST", "PROXY", "DIRECT", "a,b", "x\ny", "z" * 25):
+    for bad in (
+        "AUTO",
+        "AUTO-FAST",
+        "PROXY",
+        "DIRECT",
+        "TAILNET",
+        "TAILSCALE",
+        "a,b",
+        "x\ny",
+        "z" * 25,
+    ):
         with pytest.raises(ValueError):
             normalize_region(bad)
 
