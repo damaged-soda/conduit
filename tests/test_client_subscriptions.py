@@ -43,6 +43,7 @@ def _config(proxies: list[dict]) -> dict:
             "RULE-SET,ai,US",
             "GEOSITE,cn,DIRECT",
             "GEOIP,CN,DIRECT,no-resolve",
+            "IP-CIDR6,fd00::/8,DIRECT,no-resolve",
             "DST-PORT,22,DIRECT",
             "MATCH,PROXY",
         ],
@@ -180,14 +181,16 @@ def test_shadowrocket_config_references_node_feed_and_maps_groups_and_rules():
     profile = rendered.content
     assert "update-url = https://conduit.example/sub/shadowrocket-config?token=secret" in profile
     assert (
-        "HK = fallback, conduit, use=true, policy-regex-filter=^@HK:, "
-        "interval=60, timeout=2"
+        "HK = fallback,conduit,use=true,policy-regex-filter=^@HK:,"
+        "interval=60,timeout=2"
     ) in profile
-    assert "US = fallback, conduit, use=true, policy-regex-filter=^@US:" in profile
-    assert "AUTO = url-test, conduit, use=true" in profile
-    assert "PROXY = select, AUTO, HK, US" in profile
+    assert "US = fallback,conduit,use=true,policy-regex-filter=^@US:" in profile
+    assert "AUTO = url-test,conduit,use=true" in profile
+    assert "PROXY = select,AUTO,HK,US" in profile
     assert "/geosite/category-ai-!cn.list,US" in profile
     assert "/geoip/cn.list,DIRECT,no-resolve" in profile
+    assert "IP-CIDR,fd00::/8,DIRECT,no-resolve" in profile
+    assert "IP-CIDR6,fd00::/8" not in profile
     assert "DST-PORT,22,DIRECT" in profile
     assert profile.rstrip().endswith("FINAL,PROXY")
     assert rendered.included == 2 and rendered.omitted == 1
@@ -206,8 +209,8 @@ def test_shadowrocket_config_sanitizes_group_and_rejects_unsafe_subscription_nam
     ]
     config["rules"] = ["DOMAIN,video.example,流=媒体#", "MATCH,PROXY"]
     profile = render_shadowrocket_config(config).content
-    assert "流 媒体 = fallback, conduit, use=true, policy-regex-filter=^@流_媒体:" in profile
-    assert "PROXY = select, AUTO, 流 媒体" in profile
+    assert "流 媒体 = fallback,conduit,use=true,policy-regex-filter=^@流_媒体:" in profile
+    assert "PROXY = select,AUTO,流 媒体" in profile
     assert "DOMAIN,video.example,流 媒体" in profile
     with pytest.raises(ValueError, match="节点订阅名称非法"):
         render_shadowrocket_config(config, subscription_name="bad,name")

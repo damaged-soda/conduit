@@ -520,7 +520,11 @@ def _surge_proxy(proxy: dict) -> str:
 
 
 def _client_rules(
-    clash_config: dict, target_map: dict[str, str], *, destination_port: str
+    clash_config: dict,
+    target_map: dict[str, str],
+    *,
+    destination_port: str,
+    ipv6_cidr: str = "IP-CIDR6",
 ) -> list[str]:
     providers = clash_config.get("rule-providers") or {}
     out: list[str] = []
@@ -552,6 +556,9 @@ def _client_rules(
             kind, value = "RULE-SET", f"{_MRS_BASE}/geoip/{value.lower()}.list"
         elif kind == "DST-PORT":
             kind = destination_port
+        elif kind == "IP-CIDR6":
+            # Shadowrocket 当前用 IP-CIDR 同时承载 IPv4/IPv6；Surge 仍保留 IP-CIDR6。
+            kind = ipv6_cidr
         out.append(",".join([kind, _config_value(value), target, *options]))
     return out
 
@@ -590,22 +597,24 @@ def render_shadowrocket_config(
     groups: list[str] = []
     for region in regions:
         groups.append(
-            f"{region_name_map[region]} = fallback, {subscription_name}, use=true, "
-            f"policy-regex-filter=^@{markers[region]}:, interval=60, timeout=2, "
+            f"{region_name_map[region]} = fallback,{subscription_name},use=true,"
+            f"policy-regex-filter=^@{markers[region]}:,interval=60,timeout=2,"
             f"url={_SHADOWROCKET_TEST_URL}"
         )
     groups.append(
-        f"AUTO = url-test, {subscription_name}, use=true, interval=60, timeout=2, "
-        f"tolerance=200, url={_SHADOWROCKET_TEST_URL}"
+        f"AUTO = url-test,{subscription_name},use=true,interval=60,timeout=2,"
+        f"tolerance=200,url={_SHADOWROCKET_TEST_URL}"
     )
     groups.append(
-        "PROXY = select, AUTO"
-        + "".join(f", {region_name_map[region]}" for region in regions)
+        "PROXY = select,AUTO"
+        + "".join(f",{region_name_map[region]}" for region in regions)
     )
 
     target_map = {name: name for name in _CLIENT_BUILTINS | _CORE_GROUPS}
     target_map.update(region_name_map)
-    rules = _client_rules(clash_config, target_map, destination_port="DST-PORT")
+    rules = _client_rules(
+        clash_config, target_map, destination_port="DST-PORT", ipv6_cidr="IP-CIDR"
+    )
     if not rules or not rules[-1].startswith("FINAL,"):
         rules.append("FINAL,PROXY")
 

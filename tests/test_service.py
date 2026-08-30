@@ -422,9 +422,9 @@ def test_shadowrocket_and_surge_subscription_endpoints():
         "update-url = https://testserver/sub/shadowrocket-config?token="
         in shadowrocket_config.text
     )
-    assert "US = fallback, conduit, use=true, policy-regex-filter=^@US:" in shadowrocket_config.text
-    assert "JP = fallback, conduit, use=true, policy-regex-filter=^@JP:" in shadowrocket_config.text
-    assert "PROXY = select, AUTO, JP, US" in shadowrocket_config.text
+    assert "US = fallback,conduit,use=true,policy-regex-filter=^@US:" in shadowrocket_config.text
+    assert "JP = fallback,conduit,use=true,policy-regex-filter=^@JP:" in shadowrocket_config.text
+    assert "PROXY = select,AUTO,JP,US" in shadowrocket_config.text
     assert shadowrocket_config.text.rstrip().endswith("FINAL,PROXY")
     assert shadowrocket_config.headers["content-disposition"].endswith(
         "conduit-shadowrocket.conf"
