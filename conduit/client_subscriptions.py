@@ -525,12 +525,16 @@ def _client_rules(
     *,
     destination_port: str,
     ipv6_cidr: str = "IP-CIDR6",
+    unsupported_kinds: frozenset[str] = frozenset(),
+    ruleset_options: bool = True,
 ) -> list[str]:
     providers = clash_config.get("rule-providers") or {}
     out: list[str] = []
     for rule in clash_config.get("rules") or []:
         parts = str(rule).split(",")
         kind = parts[0]
+        if kind in unsupported_kinds:
+            continue
         if kind == "MATCH" and len(parts) >= 2:
             target = target_map.get(parts[1], "PROXY")
             out.append(f"FINAL,{target}")
@@ -559,6 +563,8 @@ def _client_rules(
         elif kind == "IP-CIDR6":
             # Shadowrocket 当前用 IP-CIDR 同时承载 IPv4/IPv6；Surge 仍保留 IP-CIDR6。
             kind = ipv6_cidr
+        if kind == "RULE-SET" and not ruleset_options:
+            options = []
         out.append(",".join([kind, _config_value(value), target, *options]))
     return out
 
@@ -613,7 +619,12 @@ def render_shadowrocket_config(
     target_map = {name: name for name in _CLIENT_BUILTINS | _CORE_GROUPS}
     target_map.update(region_name_map)
     rules = _client_rules(
-        clash_config, target_map, destination_port="DST-PORT", ipv6_cidr="IP-CIDR"
+        clash_config,
+        target_map,
+        destination_port="DST-PORT",
+        ipv6_cidr="IP-CIDR",
+        unsupported_kinds=frozenset({"PROCESS-NAME"}),
+        ruleset_options=False,
     )
     if not rules or not rules[-1].startswith("FINAL,"):
         rules.append("FINAL,PROXY")

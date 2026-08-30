@@ -44,6 +44,7 @@ def _config(proxies: list[dict]) -> dict:
             "GEOSITE,cn,DIRECT",
             "GEOIP,CN,DIRECT,no-resolve",
             "IP-CIDR6,fd00::/8,DIRECT,no-resolve",
+            "PROCESS-NAME,ssh,DIRECT",
             "DST-PORT,22,DIRECT",
             "MATCH,PROXY",
         ],
@@ -188,9 +189,11 @@ def test_shadowrocket_config_references_node_feed_and_maps_groups_and_rules():
     assert "AUTO = url-test,conduit,use=true" in profile
     assert "PROXY = select,AUTO,HK,US" in profile
     assert "/geosite/category-ai-!cn.list,US" in profile
-    assert "/geoip/cn.list,DIRECT,no-resolve" in profile
+    assert "/geoip/cn.list,DIRECT" in profile
+    assert "/geoip/cn.list,DIRECT,no-resolve" not in profile
     assert "IP-CIDR,fd00::/8,DIRECT,no-resolve" in profile
     assert "IP-CIDR6,fd00::/8" not in profile
+    assert "PROCESS-NAME" not in profile
     assert "DST-PORT,22,DIRECT" in profile
     assert profile.rstrip().endswith("FINAL,PROXY")
     assert rendered.included == 2 and rendered.omitted == 1
@@ -295,6 +298,7 @@ def test_surge_profile_maps_nodes_groups_rules_and_reports_omissions():
     assert "/geosite/category-ai-!cn.list,US" in profile
     assert "/geosite/cn.list,DIRECT" in profile
     assert "/geoip/cn.list,DIRECT,no-resolve" in profile
+    assert "PROCESS-NAME,ssh,DIRECT" in profile
     assert "DEST-PORT,22,DIRECT" in profile
     assert profile.rstrip().endswith("FINAL,PROXY")
     assert rendered.included == 4 and rendered.omitted == 1

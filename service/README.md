@@ -61,7 +61,8 @@ Clash Verge/Mihomo、Shadowrocket 或 Surge。
   （`[General]` / `[Proxy Group]` / `[Rule]`），含地区组、`AUTO` 和与 Clash/Surge 同源的分流规则。
   Shadowrocket 把节点订阅与配置分开管理：先导入上一条节点 URL，并把订阅名称设为
   `subscription_name`（默认 `conduit`），再导入本配置 URL；两者之后各自更新。配置通过
-  `use=true` 引用同名节点订阅，而不是复制一份节点凭据。
+  `use=true` 引用同名节点订阅，而不是复制一份节点凭据。Shadowrocket 当前未文档化的
+  `PROCESS-NAME` 不会输出；IPv6 网段统一使用其文档化的 `IP-CIDR`。
 - `GET /sub/surge?token=`：完整 Surge managed profile（`[General]` / `[Proxy]` / `[Proxy Group]` /
   `[Rule]`）；支持 Surge 原生的 ss/vmess/trojan/hysteria2。VLESS、Hysteria 1 以及 Surge 无法表达的
   传输参数会跳过。客户端接口以 `X-Conduit-Compatible-Nodes` / `X-Conduit-Omitted-Nodes` 报告数量；
