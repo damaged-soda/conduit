@@ -27,7 +27,7 @@ uvicorn --factory service.app:make_app   # DB 路径用 CONDUIT_DB，默认 cond
 ```
 打开 http://127.0.0.1:8000 ：建订阅（选择链接 / 文件 / 文本来源）→ 拖动订阅设置优先级 →
 导入/刷新 → 看节点池 → 给节点打地区标签 → 编辑分流策略 → 复制订阅链接导进
-clash-verge/mihomo。
+Clash Verge/Mihomo、Shadowrocket 或 Surge。
 
 ## 现在有什么
 **订阅 / 节点**
@@ -52,8 +52,14 @@ clash-verge/mihomo。
 - `GET/PUT/DELETE /api/policy`、`GET /api/categories`（geosite/geoip 白名单）、`GET /api/ruleset?kind=&name=`（看类别里匹配啥）
 - 页面规则区可只读/编辑（改名/目标下拉/增删匹配/排序/改兜底/存/恢复默认）
 
-**订阅产物**（给 clash-verge/mihomo 导入）
+**订阅产物**
 - `GET /sub/clash?token=&full=`：`pure` = proxies + 地区分组 + 规则；`full=1` 再加 fake-ip dns + tun（IPv6 接管 + default-nameserver，见根 [CONSTRAINTS.md](../CONSTRAINTS.md) 「full 模式必须项」）
+- `GET /sub/shadowrocket?token=`：Shadowrocket 常用的整份 base64 URI 行订阅；支持导出
+  ss/vmess/trojan/vless/hysteria/hysteria2，无法可靠映射的节点跳过。
+- `GET /sub/surge?token=`：完整 Surge managed profile（`[General]` / `[Proxy]` / `[Proxy Group]` /
+  `[Rule]`）；支持 Surge 原生的 ss/vmess/trojan/hysteria2。VLESS、Hysteria 1 以及 Surge 无法表达的
+  传输参数会跳过。两个新接口以 `X-Conduit-Compatible-Nodes` / `X-Conduit-Omitted-Nodes` 报告数量；
+  若没有任何兼容节点则返回 422，避免静默退化为直连。
 - Clash 来源若自带 `dns.proxy-server-nameserver`，导入会把它作为 secret 元数据随当前快照保存；
   `full=1` 按该来源实际节点的精确域名生成 `proxy-server-nameserver-policy`，不会接管其他订阅或普通
   目标域名。其他订阅 DNS 字段仍全部丢弃；相同节点域名声明不同专用 DNS 时，整份 `full=1`

@@ -80,8 +80,12 @@ mihomo health-check → 指标存储 → 生成器读「过去 N 时长不健康
   仍跨全部节点按延迟选优。标签按 access_id 存 DB、跟节点走。
 - **节点显示名**：服务输出统一使用 `[订阅名] 原节点名`；订阅改名后下一次渲染立即使用新前缀，
   撞名再追加稳定短标识。
-- **服务以订阅形态下发**：`conduit-service` 把节点池+分组+规则渲成 clash 订阅 `GET /sub/clash?token=&full=`；`pure` 纯净、`full` 加 fake-ip dns + tun（full 模式必须项见 [CONSTRAINTS.md](CONSTRAINTS.md)）。clash-verge/mihomo 直接订阅，等价 `fetch→tag→render` 流水线的产物。
-- **UDP 资格过滤在 render 期**：导入 / 刷新保留所有可解析节点，`render` 和 `/api/groups` 使用同一套 UDP 资格过滤，旧 DB 里的非 UDP 节点也不会进入订阅输出；`/sub/clash` 每次请求实时渲染，不依赖缓存刷新。
+- **服务以订阅形态下发**：`conduit-service` 先把节点池+分组+规则编译成同一份 Clash/Mihomo
+  订阅骨架，再按客户端导出：`GET /sub/clash?token=&full=`（`pure` 或追加 fake-ip dns + tun）、
+  `GET /sub/shadowrocket?token=`（base64 URI feed）、`GET /sub/surge?token=`（完整 managed profile）。
+  Shadowrocket 只有节点列表，不承载 conduit 分流；Surge 同步转换地区组和规则。目标客户端无法可靠表达的
+  节点会跳过并通过响应头计数，全部不兼容时返回 422，不生成直连降级配置。
+- **UDP 资格过滤在 render 期**：导入 / 刷新保留所有可解析节点，`render` 和 `/api/groups` 使用同一套 UDP 资格过滤，旧 DB 里的非 UDP 节点也不会进入订阅输出；三个 `/sub/*` 接口每次请求实时渲染，不依赖缓存刷新。
 
 ## 目录
 ```text

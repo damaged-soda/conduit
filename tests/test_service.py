@@ -376,6 +376,8 @@ def test_sub_clash_requires_token():
     c = _client()
     assert c.get("/sub/clash").status_code == 403
     assert c.get("/sub/clash", params={"token": "wrong"}).status_code == 403
+    assert c.get("/sub/shadowrocket").status_code == 403
+    assert c.get("/sub/surge", params={"token": "wrong"}).status_code == 403
 
 
 def test_sub_clash_pure_has_proxies_groups_and_creds():
@@ -391,6 +393,57 @@ def test_sub_clash_pure_has_proxies_groups_and_creds():
     assert cfg["rules"][-1] == "MATCH,PROXY"
     assert "tun" not in cfg and "dns" not in cfg  # 纯净版不带实例设置
     assert "pass1" in r.text  # 订阅含明文节点凭据（ss password）→ token 保护是对的
+
+
+def test_shadowrocket_and_surge_subscription_endpoints():
+    c = _client()
+    sid = _mksub(c, "Vendor")
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    token = c.get("/api/sub-token").json()["token"]
+
+    shadowrocket = c.get("/sub/shadowrocket", params={"token": token})
+    assert shadowrocket.status_code == 200
+    links = base64.b64decode(shadowrocket.text).decode().splitlines()
+    assert [link.split(":", 1)[0] for link in links] == ["ss", "trojan"]
+    assert shadowrocket.headers["content-disposition"].endswith("conduit-shadowrocket.txt")
+    assert shadowrocket.headers["x-conduit-compatible-nodes"] == "2"
+    assert shadowrocket.headers["x-conduit-omitted-nodes"] == "0"
+
+    surge = c.get(
+        "/sub/surge", params={"token": token}, headers={"x-forwarded-proto": "https"}
+    )
+    assert surge.status_code == 200
+    assert surge.text.startswith("#!MANAGED-CONFIG https://testserver/sub/surge?token=")
+    assert "[Proxy]" in surge.text and "[Proxy Group]" in surge.text and "[Rule]" in surge.text
+    assert "[Vendor] 🇺🇸 US-01 | 1x = ss" in surge.text
+    assert "[Vendor] 🇯🇵 JP-01 = trojan" in surge.text
+    assert surge.headers["content-disposition"].endswith("conduit-surge.conf")
+    assert surge.headers["x-conduit-compatible-nodes"] == "2"
+
+
+def test_subscription_page_lists_all_client_links():
+    page = _client().get("/").text
+    assert "/sub/clash" in page
+    assert "/sub/shadowrocket" in page
+    assert "/sub/surge" in page
+
+
+def test_surge_fails_closed_when_snapshot_has_no_compatible_nodes():
+    c = _client()
+    sid = _mksub(c)
+    raw = yaml.safe_dump({"proxies": [{
+        "name": "VLESS only",
+        "type": "vless",
+        "server": "vl.example",
+        "port": 443,
+        "uuid": "uuid",
+        "udp": True,
+    }]})
+    assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": raw}).status_code == 200
+    token = c.get("/api/sub-token").json()["token"]
+    response = c.get("/sub/surge", params={"token": token})
+    assert response.status_code == 422
+    assert response.json()["detail"] == "没有可导出的 Surge 兼容节点"
 
 
 def test_sub_clash_uses_subscription_priority_prefix_and_stable_region_order():
