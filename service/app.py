@@ -242,6 +242,8 @@ def _normalize_and_store(
 
 
 def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_url) -> FastAPI:
+    # 部署输入有误时启动即失败，不能等第一个订阅请求才返回无上下文的 500。
+    _with_mesh_bypass(DEFAULT_POLICY)
     store = Store(db_path)
     runtime_meta = _runtime_meta()
     app = FastAPI(title="conduit-service", version=runtime_meta["version"])
@@ -363,17 +365,21 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
     def sub_token():
         return {"token": store.get_sub_token()}
 
-    def _policy() -> dict:
-        # DB 为准；无则回落仓库 DEFAULT。rule_providers 始终服务端控制（不让 PUT 注入任意 URL，防 SSRF）。
+    def _stored_policy() -> dict:
+        """可编辑/持久化 policy；不含部署环境注入，避免 UI round-trip 把它写回 DB。"""
         stored = store.get_policy()
         if not stored:
-            return _with_mesh_bypass(DEFAULT_POLICY)
-        return _with_mesh_bypass({
+            return DEFAULT_POLICY
+        return {
             "rule_providers": DEFAULT_POLICY.get("rule_providers", {}),
             "routes": stored.get("routes", []),
             "final": stored.get("final", "PROXY"),
             "dns": stored.get("dns", {}),
-        })
+        }
+
+    def _policy() -> dict:
+        # DB 为准、无则回落仓库 DEFAULT；部署侧 mesh 事实仅在运行时合入。
+        return _with_mesh_bypass(_stored_policy())
 
     def _groups() -> list[str]:
         tags = store.get_node_tags()
@@ -391,8 +397,14 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
 
     @app.get("/api/policy")
     def get_policy():
-        pol = _policy()
-        return {"policy": pol, "rules": subscription_rules({}, pol), "custom": store.get_policy() is not None}
+        stored = _stored_policy()
+        effective = _with_mesh_bypass(stored)
+        return {
+            "policy": stored,
+            "effective_policy": effective,
+            "rules": subscription_rules({}, effective),
+            "custom": store.get_policy() is not None,
+        }
 
     @app.get("/api/groups")
     def list_groups():
