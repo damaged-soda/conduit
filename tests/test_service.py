@@ -786,6 +786,7 @@ def test_policy_explicit_matchers_and_dns_in_full():
 def test_env_mesh_dns_suffix_augments_custom_policy(monkeypatch):
     monkeypatch.setenv("CONDUIT_MESH_DOMAIN_SUFFIXES", "ts.net")
     monkeypatch.setenv("CONDUIT_MESH_DNS_SERVER", "100.100.100.100")
+    monkeypatch.setenv("CONDUIT_MESH_PROCESS_NAMES", "tailscaled tailscaled")
     c = _client()
     sid = _mksub(c)
     c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
@@ -796,9 +797,64 @@ def test_env_mesh_dns_suffix_augments_custom_policy(monkeypatch):
     token = c.get("/api/sub-token").json()["token"]
     cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token, "full": 1}).text)
     assert "DOMAIN-SUFFIX,ts.net,DIRECT" in cfg["rules"]
+    assert cfg["rules"].count("PROCESS-NAME,tailscaled,DIRECT") == 1
+    assert cfg["rules"].index("PROCESS-NAME,tailscaled,DIRECT") < cfg["rules"].index(
+        "DOMAIN-SUFFIX,example.internal,DIRECT"
+    )
     assert "DOMAIN-SUFFIX,example.internal,DIRECT" in cfg["rules"]
     assert "+.ts.net" in cfg["dns"]["fake-ip-filter"]
     assert cfg["dns"]["nameserver-policy"]["+.ts.net"] == "100.100.100.100"
+
+
+def test_env_mesh_process_names_validate_and_preserve_existing_direct(monkeypatch):
+    monkeypatch.setenv("CONDUIT_MESH_PROCESS_NAMES", "tailscaled,ssh")
+    c = _client()
+    pol = {"routes": [{"name": "existing", "to": "DIRECT", "process_name": ["ssh"]}],
+           "final": "PROXY"}
+    assert c.put("/api/policy", json=pol).status_code == 200
+
+    response = c.get("/api/policy").json()
+    policy = response["effective_policy"]
+    direct_processes = [
+        process
+        for route in policy["routes"]
+        if route["to"] == "DIRECT"
+        for process in route.get("process_name", [])
+    ]
+    assert direct_processes.count("tailscaled") == 1
+    assert direct_processes.count("ssh") == 1
+
+    # UI round-trip 只能保存可编辑 policy；部署侧注入不能渗入 DB。
+    editable = response["policy"]
+    assert all("tailscaled" not in route.get("process_name", []) for route in editable["routes"])
+    assert c.put("/api/policy", json=editable).status_code == 200
+    monkeypatch.delenv("CONDUIT_MESH_PROCESS_NAMES")
+    saved = c.get("/api/policy").json()["policy"]
+    assert all("tailscaled" not in route.get("process_name", []) for route in saved["routes"])
+
+
+def test_env_mesh_process_only_and_explicit_empty(monkeypatch):
+    monkeypatch.delenv("CONDUIT_MESH_DOMAIN_SUFFIXES", raising=False)
+    monkeypatch.delenv("CONDUIT_MESH_DNS_SERVER", raising=False)
+    monkeypatch.setenv("CONDUIT_MESH_PROCESS_NAMES", "tailscaled")
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    token = c.get("/api/sub-token").json()["token"]
+
+    cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token, "full": 1}).text)
+    assert "PROCESS-NAME,tailscaled,DIRECT" in cfg["rules"]
+    assert not any(rule.startswith("DOMAIN-SUFFIX,ts.net,") for rule in cfg["rules"])
+
+    monkeypatch.setenv("CONDUIT_MESH_PROCESS_NAMES", "")
+    cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token, "full": 1}).text)
+    assert "PROCESS-NAME,tailscaled,DIRECT" not in cfg["rules"]
+
+
+def test_mesh_environment_fails_fast_at_app_start(monkeypatch):
+    monkeypatch.setenv("CONDUIT_MESH_PROCESS_NAMES", "x" * 101)
+    with pytest.raises(RuntimeError, match="CONDUIT_MESH_PROCESS_NAMES 非法"):
+        create_app(":memory:")
 
 
 def test_policy_rejects_bad_matchers():

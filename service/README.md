@@ -50,6 +50,8 @@ Clash/Mihomo（如 Clash Verge）、Stash、Shadowrocket（节点订阅 + 配置
 
 **分流策略**（规则面，category→provider→group；DB 为准，无则回落仓库 `DEFAULT_POLICY`）
 - `GET/PUT/DELETE /api/policy`、`GET /api/categories`（geosite/geoip 白名单）、`GET /api/ruleset?kind=&name=`（看类别里匹配啥）
+- `GET /api/policy` 的 `policy` 是可编辑/持久化值，`effective_policy` 与 `rules` 才包含部署环境注入；
+  页面保存不会把 mesh 旁路事实反写进 DB，环境变量仍是这些字段的单写者
 - 页面规则区可只读/编辑（改名/目标下拉/增删匹配/排序/改兜底/存/恢复默认）
 
 **订阅产物**（给客户端导入）
@@ -81,10 +83,14 @@ Clash/Mihomo（如 Clash Verge）、Stash、Shadowrocket（节点订阅 + 配置
   上游原序”；默认 `AUTO-FAST` 仍跨全部节点按延迟选优。拖动后服务端产物立即变化，客户端刷新订阅后生效。
 - `GET /api/sub-token`（+ 页面显示可复制 URL）；token 保护节点凭据，DB `--no-access-log`
 
-**部署侧 mesh DNS 输入**（非 secret，不进 DB）：`deploy/compose.yaml` 默认注入 Tailscale 通用常量
-`CONDUIT_MESH_DOMAIN_SUFFIXES=ts.net` 和 `CONDUIT_MESH_DNS_SERVER=100.100.100.100`，可用同名环境
-变量覆盖；裸跑或其他部署方式按实际 mesh 需要设置。这些值会运行时合入 policy：生成 DIRECT 规则、
-fake-ip 放行和 `nameserver-policy`，包括已有自定义 policy 的场景。conduit 不内置具体 tailnet 名。
+**部署侧 mesh 旁路输入**（非 secret，不进 DB）：`deploy/compose.yaml` 默认注入 Tailscale 通用常量
+`CONDUIT_MESH_DOMAIN_SUFFIXES=ts.net`、`CONDUIT_MESH_DNS_SERVER=100.100.100.100` 和
+`CONDUIT_MESH_PROCESS_NAMES=tailscaled`。三者均可用同名环境变量覆盖；其中进程名还可用显式空值
+禁用，域名与 resolver 在 Compose 默认接线中为空时仍回落默认值。裸跑或其他部署方式按实际 mesh
+设置。域名和 resolver 会生成 DIRECT 规则、fake-ip 放行及 `nameserver-policy`；进程名会生成
+高优先级 `PROCESS-NAME,<name>,DIRECT`，让 mesh 数据面发往 peer/中继真实公网 endpoint 的底层包
+绕过本机代理 TUN。它们运行时合入 policy，包括已有自定义 policy 的场景；服务实现不内置具体
+tailnet 名或进程名。
 
 存储：`service/db.py`（SQLite）：`subscriptions(position, source_type=file|url)` / `imports` /
 `nodes(sub_id, position)` + `meta`（key=`policy` 存自定义策略 JSON）+ 节点标签。旧库升级时按创建时间

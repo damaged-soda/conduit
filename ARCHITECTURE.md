@@ -65,7 +65,10 @@ mihomo health-check → 指标存储 → 生成器读「过去 N 时长不健康
 - **目标在 render 期校验存在性**：`to`/`final` 不在 {DIRECT,REJECT,PROXY,AUTO,各地区组} 就落到 `final`/PROXY，保证 mihomo 配置合法。
 - 匹配来源：内置 `geosite`/`geoip`(mihomo 自带 geo 库，cn/广告大类) + `rule_set`(MetaCubeX `.mrs` 外部规则集，引用而非拷贝、自动更新)。**`.mrs` 只支持 `domain`/`ipcidr`，不支持 `classical`** → process/port 等用显式 `process_name`/`dst_port` 渲成 PROCESS-NAME/DST-PORT。
 - **可编辑**：策略存 DB(`meta` key=`policy`)，无则回落仓库 `DEFAULT_POLICY`；页面 / `PUT /api/policy` 改。`rule_providers` 服务端控制(防 PUT 注入 URL → SSRF)、geosite/geoip 走服务端白名单。
-- **部署侧 mesh DNS 输入**：调用方可通过 `CONDUIT_MESH_DOMAIN_SUFFIXES` 注入私有 mesh / MagicDNS 后缀；需要专用解析器时用 `CONDUIT_MESH_DNS_SERVER` 生成 `nameserver-policy`。这些运行时合入 policy，不写 DB，不把具体 tailnet 名固化进 conduit。
+- **部署侧 mesh 旁路输入**：调用方可通过 `CONDUIT_MESH_DOMAIN_SUFFIXES` 注入私有 mesh / MagicDNS 后缀，
+  需要专用解析器时用 `CONDUIT_MESH_DNS_SERVER` 生成 `nameserver-policy`；通过
+  `CONDUIT_MESH_PROCESS_NAMES` 注入必须绕过本机代理 TUN 的 mesh 数据面进程。它们运行时合入
+  policy，不写 DB；服务不内置具体 tailnet 名或进程名，生产接线可提供通用默认值。
 - **来源级节点 DNS**：若 Clash 订阅自带 `dns.proxy-server-nameserver`，render 为该来源当前实际输出的
   每个节点域名生成精确 `proxy-server-nameserver-policy`；其他来源仍走全局节点 DNS。IP 节点不生成
   policy；同一域名被不同来源声明为不同解析器时 fail-closed，避免静默选择错误入口。DoH URL 随

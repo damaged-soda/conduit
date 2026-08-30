@@ -162,22 +162,50 @@ def _mesh_domain_suffixes() -> list[str]:
     return out
 
 
+def _mesh_process_names() -> list[str]:
+    """部署侧注入的 mesh 数据面进程；conduit 不内置具体实现或宿主拓扑。"""
+    raw = os.environ.get("CONDUIT_MESH_PROCESS_NAMES", "")
+    out: list[str] = []
+    for part in re.split(r"[,\s]+", raw):
+        name = part.strip()
+        if not name:
+            continue
+        if not _PLAINVAL.fullmatch(name):
+            raise RuntimeError(f"CONDUIT_MESH_PROCESS_NAMES 非法：{part}")
+        if name not in out:
+            out.append(name)
+    return out
+
+
 def _with_mesh_bypass(policy: dict) -> dict:
-    """把部署侧 mesh DNS 事实合入 policy，但不落库、不覆盖用户自定义规则。"""
+    """把部署侧 mesh DNS / 数据面进程事实合入 policy，不落库、不覆盖用户规则。"""
     routes = [dict(r) for r in policy.get("routes", [])]
     dns = dict(policy.get("dns", {}))
     suffixes = _mesh_domain_suffixes()
-    if suffixes:
-        existing = {
-            s
-            for r in routes
-            if r.get("to") == "DIRECT"
-            for s in r.get("domain_suffix", [])
-        }
-        missing = [s for s in suffixes if s not in existing]
-        if missing:
-            routes = [{"name": "mesh DNS", "to": "DIRECT", "domain_suffix": missing}] + routes
+    process_names = _mesh_process_names()
+    existing_suffixes = {
+        s
+        for r in routes
+        if r.get("to") == "DIRECT"
+        for s in r.get("domain_suffix", [])
+    }
+    existing_processes = {
+        p
+        for r in routes
+        if r.get("to") == "DIRECT"
+        for p in r.get("process_name", [])
+    }
+    missing_suffixes = [s for s in suffixes if s not in existing_suffixes]
+    missing_processes = [p for p in process_names if p not in existing_processes]
+    if missing_suffixes or missing_processes:
+        mesh_route: dict = {"name": "mesh bypass", "to": "DIRECT"}
+        if missing_suffixes:
+            mesh_route["domain_suffix"] = missing_suffixes
+        if missing_processes:
+            mesh_route["process_name"] = missing_processes
+        routes = [mesh_route] + routes
 
+    if suffixes:
         server = os.environ.get("CONDUIT_MESH_DNS_SERVER", "").strip()
         if server:
             if "\n" in server or "\r" in server or len(server) > 200:
@@ -214,6 +242,8 @@ def _normalize_and_store(
 
 
 def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_url) -> FastAPI:
+    # 部署输入有误时启动即失败，不能等第一个订阅请求才返回无上下文的 500。
+    _with_mesh_bypass(DEFAULT_POLICY)
     store = Store(db_path)
     runtime_meta = _runtime_meta()
     app = FastAPI(title="conduit-service", version=runtime_meta["version"])
@@ -335,17 +365,21 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
     def sub_token():
         return {"token": store.get_sub_token()}
 
-    def _policy() -> dict:
-        # DB 为准；无则回落仓库 DEFAULT。rule_providers 始终服务端控制（不让 PUT 注入任意 URL，防 SSRF）。
+    def _stored_policy() -> dict:
+        """可编辑/持久化 policy；不含部署环境注入，避免 UI round-trip 把它写回 DB。"""
         stored = store.get_policy()
         if not stored:
-            return _with_mesh_bypass(DEFAULT_POLICY)
-        return _with_mesh_bypass({
+            return DEFAULT_POLICY
+        return {
             "rule_providers": DEFAULT_POLICY.get("rule_providers", {}),
             "routes": stored.get("routes", []),
             "final": stored.get("final", "PROXY"),
             "dns": stored.get("dns", {}),
-        })
+        }
+
+    def _policy() -> dict:
+        # DB 为准、无则回落仓库 DEFAULT；部署侧 mesh 事实仅在运行时合入。
+        return _with_mesh_bypass(_stored_policy())
 
     def _groups() -> list[str]:
         tags = store.get_node_tags()
@@ -363,8 +397,14 @@ def create_app(db_path: str = ":memory:", fetcher: Callable[[str], str] = fetch_
 
     @app.get("/api/policy")
     def get_policy():
-        pol = _policy()
-        return {"policy": pol, "rules": subscription_rules({}, pol), "custom": store.get_policy() is not None}
+        stored = _stored_policy()
+        effective = _with_mesh_bypass(stored)
+        return {
+            "policy": stored,
+            "effective_policy": effective,
+            "rules": subscription_rules({}, effective),
+            "custom": store.get_policy() is not None,
+        }
 
     @app.get("/api/groups")
     def list_groups():
