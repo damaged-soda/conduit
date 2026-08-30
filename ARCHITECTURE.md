@@ -82,7 +82,8 @@ mihomo health-check → 指标存储 → 生成器读「过去 N 时长不健康
   撞名再追加稳定短标识。
 - **服务以订阅形态下发**：`conduit-service` 先把节点池+分组+规则编译成同一份 Clash/Mihomo
   订阅骨架，再按客户端导出：`GET /sub/clash?token=&full=`（`pure` 或追加 fake-ip dns + tun）、
-  `GET /sub/stash?token=`（pure 骨架加无身份信息的原生 Tailscale 节点）、
+  `GET /sub/stash?token=`（pure 骨架加无身份信息的原生 Tailscale 节点与 `TAILNET` 组，并把
+  MagicDNS 和 Tailscale IPv4/IPv6 显式交给该组）、
   `GET /sub/shadowrocket?token=`（base64 URI 节点 feed）、
   `GET /sub/shadowrocket-config?token=`（引用该 feed 的完整分流配置）、以及
   `GET /sub/surge?token=`（完整 managed profile）。Shadowrocket 与 Surge 都同步转换地区组和规则；
