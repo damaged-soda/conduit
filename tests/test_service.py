@@ -410,12 +410,19 @@ def test_sub_stash_adds_secretless_native_tailscale_only_to_stash():
     assert not any(proxy["type"] == "tailscale" for proxy in clash["proxies"])
     assert stash["proxies"][0] == {"name": "TAILSCALE", "type": "tailscale"}
     assert not any(key in stash["proxies"][0] for key in ("auth-key", "hostname", "control-url"))
-    assert "TAILSCALE" not in {
-        member
-        for group in stash["proxy-groups"]
-        for member in group.get("proxies", [])
+    stash_groups = {group["name"]: group for group in stash["proxy-groups"]}
+    assert stash_groups["TAILNET"] == {
+        "name": "TAILNET",
+        "type": "select",
+        "proxies": ["TAILSCALE"],
     }
-    assert stash["rules"] == clash["rules"]
+    assert "TAILNET" not in {group["name"] for group in clash["proxy-groups"]}
+    assert stash["rules"][:3] == [
+        "DOMAIN-SUFFIX,ts.net,TAILNET",
+        "IP-CIDR,100.64.0.0/10,TAILNET,no-resolve",
+        "IP-CIDR6,fd7a:115c:a1e0::/48,TAILNET,no-resolve",
+    ]
+    assert stash["rules"][3:] == clash["rules"]
     assert "tun" not in stash and "dns" not in stash
     assert response.headers.get("content-disposition") == (
         "attachment; filename=conduit-stash.yaml"
@@ -427,7 +434,15 @@ def test_sub_stash_keeps_tailscale_node_when_upstream_pool_is_empty():
     token = c.get("/api/sub-token").json()["token"]
     cfg = yaml.safe_load(c.get("/sub/stash", params={"token": token}).text)
     assert cfg["proxies"] == [{"name": "TAILSCALE", "type": "tailscale"}]
-    assert cfg["rules"] == ["MATCH,DIRECT"]
+    assert cfg["proxy-groups"] == [
+        {"name": "TAILNET", "type": "select", "proxies": ["TAILSCALE"]}
+    ]
+    assert cfg["rules"] == [
+        "DOMAIN-SUFFIX,ts.net,TAILNET",
+        "IP-CIDR,100.64.0.0/10,TAILNET,no-resolve",
+        "IP-CIDR6,fd7a:115c:a1e0::/48,TAILNET,no-resolve",
+        "MATCH,DIRECT",
+    ]
 
 
 def test_sub_clash_uses_subscription_priority_prefix_and_stable_region_order():

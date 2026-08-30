@@ -41,6 +41,9 @@ _RESERVED_NAMES = {"DIRECT", "REJECT", "REJECT-DROP", "PASS", "GLOBAL", "COMPATI
 _CORE_KEYS = {"name", "type", "server", "port"}
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 _STASH_TAILSCALE_NAME = "TAILSCALE"
+_STASH_TAILNET_GROUP = "TAILNET"
+_TAILSCALE_IPV4_CIDR = "100.64.0.0/10"
+_TAILSCALE_IPV6_CIDR = "fd7a:115c:a1e0::/48"
 
 
 def _short(aid_value: str) -> str:
@@ -129,6 +132,15 @@ def _direct_rules(direct: dict) -> list[str]:
         rtype = "IP-CIDR6" if ":" in c else "IP-CIDR"
         rules.append(f"{rtype},{c},DIRECT,no-resolve")
     return rules
+
+
+def _tailnet_rules(target: str) -> list[str]:
+    """Stash 内置 Tailscale 的确定性入口；必须排在通用 DIRECT 兜底之前。"""
+    return [
+        f"DOMAIN-SUFFIX,ts.net,{target}",
+        f"IP-CIDR,{_TAILSCALE_IPV4_CIDR},{target},no-resolve",
+        f"IP-CIDR6,{_TAILSCALE_IPV6_CIDR},{target},no-resolve",
+    ]
 
 
 def _fake_ip_filter(direct: dict) -> list[str]:
@@ -273,8 +285,9 @@ def build_subscription(
     tags：`{access_id: {"region": override|None, "quarantined": bool}}`（service 传入）。隔离的剔除；
     region 优先用 override，否则 `region_of(raw_name)`。标签按 access_id 存 → 跟着节点走，不跟订阅。
 
-    stash_tailscale：加入一个 Stash 专用的内置 Tailscale 节点。节点不携带 auth-key、hostname 或
-    tailnet 地址，由每台 Stash 客户端在应用内交互认证，避免把身份或拓扑事实写进订阅。
+    stash_tailscale：加入一个 Stash 专用的内置 Tailscale 节点和单成员 `TAILNET` 策略组，
+    并把 MagicDNS / Tailscale IP 规则置于通用 DIRECT 规则之前。节点不携带 auth-key、hostname
+    或 tailnet 地址，由每台 Stash 客户端在应用内交互认证。
     """
     tags = tags or {}
     policy = policy or DEFAULT_POLICY
@@ -363,9 +376,20 @@ def build_subscription(
         else []
     )
     client_proxy_names = {proxy["name"] for proxy in client_proxies}
+    client_groups = (
+        [{"name": _STASH_TAILNET_GROUP, "type": "select", "proxies": [_STASH_TAILSCALE_NAME]}]
+        if stash_tailscale
+        else []
+    )
+    client_group_names = {group["name"] for group in client_groups}
+    tailnet_target = _STASH_TAILNET_GROUP if stash_tailscale else None
     if not active:  # 无可用节点：给个合法的全直连配置，别产出坏订阅
         cfg["proxies"] = client_proxies
-        cfg["rules"] = ["MATCH,DIRECT"]
+        if client_groups:
+            cfg["proxy-groups"] = client_groups
+        cfg["rules"] = (
+            _tailnet_rules(tailnet_target) if tailnet_target else []
+        ) + ["MATCH,DIRECT"]
         return cfg
 
     if full:
@@ -387,7 +411,9 @@ def build_subscription(
     nodes_only = [n for n, _ in active]
     names = _assign_names(
         nodes_only,
-        extra_reserved={"AUTO", "AUTO-FAST", *region_order} | client_proxy_names,
+        extra_reserved={"AUTO", "AUTO-FAST", *region_order}
+        | client_proxy_names
+        | client_group_names,
         source_names=source_names,
     )
     cfg["proxies"] = client_proxies + [
@@ -398,31 +424,46 @@ def build_subscription(
     for (_, r), nm in zip(active, names):
         by_region.setdefault(r, []).append(nm)
 
-    groups: list[dict] = [{"name": "PROXY", "type": "select", "proxies": ["AUTO", *region_order]}]
+    groups: list[dict] = client_groups + [
+        {"name": "PROXY", "type": "select", "proxies": ["AUTO", *region_order]}
+    ]
     groups.append(_fallback_group("AUTO", ["AUTO-FAST", *names]))
     groups.append(_url_test_group("AUTO-FAST", names, hidden=True))
     groups += [_fallback_group(r, by_region[r]) for r in region_order]
     cfg["proxy-groups"] = groups
 
     # rule-providers（被 routes 引用的 .mrs）；指向「当前不存在的组」的 route / final 落到 PROXY，保证合法
-    valid = {"DIRECT", "REJECT", "PROXY", "AUTO", *region_order}
+    valid = {"DIRECT", "REJECT", "PROXY", "AUTO", *region_order} | client_group_names
     providers = rule_providers_block(policy)
     if providers:
         cfg["rule-providers"] = providers
-    cfg["rules"] = subscription_rules(direct, policy, lambda to: to if to in valid else "PROXY")
+    cfg["rules"] = subscription_rules(
+        direct,
+        policy,
+        lambda to: to if to in valid else "PROXY",
+        tailnet_target=tailnet_target,
+    )
     return cfg
 
 
-def subscription_rules(direct: dict, policy: dict, resolve=None) -> list[str]:
-    """订阅的完整规则序：私网/tailnet 兜底(rule#0) → 调用方 direct-list → 策略路由 → MATCH,final。
+def subscription_rules(
+    direct: dict,
+    policy: dict,
+    resolve=None,
+    *,
+    tailnet_target: str | None = None,
+) -> list[str]:
+    """订阅的完整规则序：可选 Tailnet → 私网兜底(rule#0) → direct-list → 策略 → MATCH。
 
     规则不依赖具体节点（只依赖 direct-list + 策略），可单独给页面展示。resolve（render 传入）把指向
     不存在组的 route / final 落到 PROXY；默认 identity（页面只读视图展示意图目标）。
+    tailnet_target 仅供内置 Tailscale 的客户端产物使用，必须是策略组而不是具体节点名。
     """
     resolve = resolve or (lambda to: to)
     final = resolve(policy.get("final", "PROXY"))
     return (
-        _direct_rules({"ip_cidr": _BASELINE_DIRECT})
+        (_tailnet_rules(tailnet_target) if tailnet_target else [])
+        + _direct_rules({"ip_cidr": _BASELINE_DIRECT})
         + _direct_rules(direct)
         + policy_rules(policy, resolve)
         + [f"MATCH,{final}"]

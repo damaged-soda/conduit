@@ -55,6 +55,25 @@ def test_stash_tailscale_name_is_reserved_from_upstream_nodes():
     assert cfg["proxies"][1]["type"] == "trojan"
 
 
+def test_stash_tailnet_rules_precede_generic_direct_baseline():
+    cfg = build_subscription([_node("JP")], {}, stash_tailscale=True)
+    groups = {group["name"]: group for group in cfg["proxy-groups"]}
+    assert groups["TAILNET"] == {
+        "name": "TAILNET",
+        "type": "select",
+        "proxies": ["TAILSCALE"],
+    }
+    rules = cfg["rules"]
+    assert rules[:3] == [
+        "DOMAIN-SUFFIX,ts.net,TAILNET",
+        "IP-CIDR,100.64.0.0/10,TAILNET,no-resolve",
+        "IP-CIDR6,fd7a:115c:a1e0::/48,TAILNET,no-resolve",
+    ]
+    assert rules.index("IP-CIDR,100.64.0.0/10,TAILNET,no-resolve") < rules.index(
+        "IP-CIDR,100.64.0.0/10,DIRECT,no-resolve"
+    )
+
+
 def test_explicit_matchers():
     pol = {"routes": [{"to": "DIRECT", "domain_suffix": ["tailscale.com"], "domain": ["derp.x"],
                        "ip_cidr": ["123.57.92.37/32"], "process_name": ["ssh"], "dst_port": ["22"]}], "final": "PROXY"}
