@@ -419,6 +419,8 @@ def test_shadowrocket_and_surge_subscription_endpoints():
     assert "[Vendor] 🇯🇵 JP-01 = trojan" in surge.text
     assert surge.headers["content-disposition"].endswith("conduit-surge.conf")
     assert surge.headers["x-conduit-compatible-nodes"] == "2"
+    direct = c.get("/sub/surge", params={"token": token})
+    assert direct.text.startswith("#!MANAGED-CONFIG http://testserver/sub/surge?token=")
 
 
 def test_subscription_page_lists_all_client_links():
@@ -444,6 +446,23 @@ def test_surge_fails_closed_when_snapshot_has_no_compatible_nodes():
     response = c.get("/sub/surge", params={"token": token})
     assert response.status_code == 422
     assert response.json()["detail"] == "没有可导出的 Surge 兼容节点"
+
+
+def test_shadowrocket_fails_closed_when_snapshot_has_no_compatible_nodes():
+    c = _client()
+    sid = _mksub(c)
+    raw = yaml.safe_dump({"proxies": [{
+        "name": "SOCKS only",
+        "type": "socks5",
+        "server": "socks.example",
+        "port": 1080,
+        "udp": True,
+    }]})
+    assert c.post(f"/api/subscriptions/{sid}/import", json={"raw": raw}).status_code == 200
+    token = c.get("/api/sub-token").json()["token"]
+    response = c.get("/sub/shadowrocket", params={"token": token})
+    assert response.status_code == 422
+    assert response.json()["detail"] == "没有可导出的 Shadowrocket 兼容节点"
 
 
 def test_sub_clash_uses_subscription_priority_prefix_and_stable_region_order():

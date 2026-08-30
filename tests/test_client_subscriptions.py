@@ -137,6 +137,24 @@ def test_shadowrocket_skips_unmappable_nodes_and_rejects_empty_output():
         render_shadowrocket_subscription(_config([unsupported]))
 
 
+def test_shadowrocket_ss_2022_uses_plain_sip002_userinfo():
+    proxy = {
+        "name": "SS 2022",
+        "type": "ss",
+        "server": "s.example",
+        "port": 8388,
+        "cipher": "2022-blake3-aes-256-gcm",
+        "password": "c2VjcmV0L2tleQ==",
+        "udp": True,
+    }
+    rendered = render_shadowrocket_subscription(_config([proxy]))
+    uri = base64.b64decode(rendered.content).decode().strip()
+    assert uri.startswith("ss://2022-blake3-aes-256-gcm:c2VjcmV0L2tleQ%3D%3D@s.example:8388/")
+    node = normalize(uri, "uri", "shadowrocket")[0]
+    assert node.params["cipher"] == proxy["cipher"]
+    assert node.params["password"] == proxy["password"]
+
+
 def test_surge_profile_maps_nodes_groups_rules_and_reports_omissions():
     proxies = [
         {
@@ -209,12 +227,55 @@ def test_surge_profile_maps_nodes_groups_rules_and_reports_omissions():
     assert "download-bandwidth=100" in profile
     assert "VLESS only =" not in profile
     assert "PROXY = select, AUTO, HK, US" in profile
+    group_lines = profile.split("[Proxy Group]\n", 1)[1].split("\n\n", 1)[0].splitlines()
+    assert [line.split(" =", 1)[0] for line in group_lines] == [
+        "HK", "US", "AUTO-FAST", "AUTO", "PROXY"
+    ]
     assert "/geosite/category-ai-!cn.list,US" in profile
     assert "/geosite/cn.list,DIRECT" in profile
     assert "/geoip/cn.list,DIRECT,no-resolve" in profile
     assert "DEST-PORT,22,DIRECT" in profile
     assert profile.rstrip().endswith("FINAL,PROXY")
     assert rendered.included == 4 and rendered.omitted == 1
+
+
+def test_surge_escapes_assignment_and_comment_characters_in_names_and_values():
+    proxy = {
+        "name": 'bad=name,#;"\\',
+        "type": "ss",
+        "server": "ss.example",
+        "port": 8388,
+        "cipher": "aes-256-gcm",
+        "password": "key=value#comment",
+        "udp": True,
+    }
+    profile = render_surge_subscription(_config([proxy])).content
+    assert 'bad name = ss, ss.example, 8388' in profile
+    assert 'password="key=value#comment"' in profile
+
+
+def test_surge_sanitizes_region_group_and_rule_target_together():
+    proxy = {
+        "name": "Node",
+        "type": "ss",
+        "server": "ss.example",
+        "port": 8388,
+        "cipher": "aes-256-gcm",
+        "password": "password",
+        "udp": True,
+    }
+    config = _config([proxy])
+    config["proxy-groups"] = [
+        {"name": "PROXY", "type": "select", "proxies": ["AUTO", "流=媒体#"]},
+        {"name": "AUTO", "type": "fallback", "proxies": ["AUTO-FAST", "Node"]},
+        {"name": "AUTO-FAST", "type": "url-test", "proxies": ["Node"]},
+        {"name": "流=媒体#", "type": "fallback", "proxies": ["Node"]},
+    ]
+    config["rules"] = ["DOMAIN,video.example,流=媒体#", "MATCH,PROXY"]
+    profile = render_surge_subscription(config).content
+    assert "流 媒体 = fallback, Node" in profile
+    assert "PROXY = select, AUTO, 流 媒体" in profile
+    assert "DOMAIN,video.example,流 媒体" in profile
 
 
 def test_surge_rejects_snapshot_with_only_unsupported_protocols():

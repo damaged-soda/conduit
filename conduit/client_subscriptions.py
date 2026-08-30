@@ -13,7 +13,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 from .udp import truthy
 
@@ -124,11 +124,13 @@ def _tls_query(proxy: dict, query: list[tuple[str, str]], *, always: bool = Fals
 
 def _shadowrocket_ss(proxy: dict) -> str:
     _only_keys(proxy, {"cipher", "password", "udp", "plugin", "plugin-opts"})
-    userinfo = _b64(
-        f"{_required(proxy, 'cipher')}:{_required(proxy, 'password')}",
-        urlsafe=True,
-        padding=False,
-    )
+    cipher = str(_required(proxy, "cipher"))
+    password = str(_required(proxy, "password"))
+    # SIP002：普通 AEAD/stream 推荐 Base64URL；AEAD-2022 必须用 percent-encoded 明文。
+    if cipher.startswith("2022-"):
+        userinfo = f"{quote(cipher, safe='')}:{quote(password, safe='')}"
+    else:
+        userinfo = _b64(f"{cipher}:{password}", urlsafe=True, padding=False)
     query: list[tuple[str, str]] = []
     plugin = proxy.get("plugin")
     if plugin:
@@ -152,7 +154,7 @@ def _shadowrocket_ss(proxy: dict) -> str:
     _bool_query(query, "udp", proxy.get("udp"))
     suffix = f"?{urlencode(query, quote_via=quote)}" if query else ""
     return (
-        f"ss://{userinfo}@{_authority(proxy['server'], proxy['port'])}{suffix}"
+        f"ss://{userinfo}@{_authority(proxy['server'], proxy['port'])}/{suffix}"
         f"#{quote(str(proxy['name']), safe='')}"
     )
 
@@ -308,7 +310,7 @@ def _surge_value(value: object) -> str:
     text = str(value)
     if "\n" in text or "\r" in text:
         raise _UnsupportedProxy("Surge 值含换行")
-    if not text or text != text.strip() or any(ch in text for ch in ',"\\#;'):
+    if not text or text != text.strip() or any(ch in text for ch in '=,"\\#;'):
         escaped = text.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{escaped}"'
     return text
@@ -451,12 +453,11 @@ def _surge_proxy(proxy: dict) -> str:
     raise _UnsupportedProxy(f"Surge 不支持 {kind}")
 
 
-def _safe_surge_names(proxies: list[dict], group_names: set[str]) -> dict[str, str]:
-    used = set(group_names) | _SURGE_BUILTINS
+def _safe_surge_labels(names: list[str], reserved: set[str]) -> dict[str, str]:
+    used = set(reserved)
     out: dict[str, str] = {}
-    for proxy in proxies:
-        original = str(proxy["name"])
-        base = re.sub(r"[=,\r\n\t]+", " ", original).strip() or "node"
+    for original in names:
+        base = re.sub(r'[=,\r\n\t"\\#;]+', " ", original).strip() or "node"
         name = base
         if name in used:
             name = f"{base}-{hashlib.sha1(original.encode()).hexdigest()[:6]}"
@@ -469,27 +470,29 @@ def _safe_surge_names(proxies: list[dict], group_names: set[str]) -> dict[str, s
     return out
 
 
-def _surge_rules(clash_config: dict, valid_targets: set[str]) -> list[str]:
+def _surge_rules(clash_config: dict, target_map: dict[str, str]) -> list[str]:
     providers = clash_config.get("rule-providers") or {}
     out: list[str] = []
     for rule in clash_config.get("rules") or []:
         parts = str(rule).split(",")
         kind = parts[0]
         if kind == "MATCH" and len(parts) >= 2:
-            target = parts[1] if parts[1] in valid_targets else "PROXY"
+            target = target_map.get(parts[1], "PROXY")
             out.append(f"FINAL,{target}")
             continue
         if len(parts) < 3:
             continue
         value, target = parts[1], parts[2]
-        target = target if target in valid_targets else "PROXY"
+        target = target_map.get(target, "PROXY")
         options = parts[3:]
         if kind == "RULE-SET":
             spec = providers.get(value)
             if not spec:
                 continue
             url = str(spec.get("url") or "")
-            value = url[:-4] + ".list" if url.endswith(".mrs") else url
+            parsed = urlsplit(url)
+            path = parsed.path[:-4] + ".list" if parsed.path.endswith(".mrs") else parsed.path
+            value = urlunsplit(parsed._replace(path=path))
             if not value:
                 continue
         elif kind == "GEOSITE":
@@ -517,9 +520,7 @@ def render_surge_subscription(
         raise NoCompatibleProxies("没有可导出的 Surge 兼容节点")
 
     group_specs = {g["name"]: g for g in clash_config.get("proxy-groups") or []}
-    group_names = set(group_specs)
-    name_map = _safe_surge_names([proxy for proxy, _ in compatible], group_names)
-    proxy_names = set(name_map)
+    proxy_names = {proxy["name"] for proxy, _ in compatible}
 
     region_groups: list[str] = []
     for group in clash_config.get("proxy-groups") or []:
@@ -529,25 +530,42 @@ def render_surge_subscription(
         if any(member in proxy_names for member in group.get("proxies") or []):
             region_groups.append(name)
 
-    groups: list[str] = [f"PROXY = select, AUTO{''.join(f', {name}' for name in region_groups)}"]
+    core_groups = {"PROXY", "AUTO", "AUTO-FAST"}
+    region_name_map = _safe_surge_labels(region_groups, core_groups | _SURGE_BUILTINS)
+    name_map = _safe_surge_labels(
+        [proxy["name"] for proxy, _ in compatible],
+        core_groups | _SURGE_BUILTINS | set(region_name_map.values()),
+    )
+
+    # 叶子到根：避免旧版 Surge 对同 section 内的 group 前向引用解析不一致。
+    groups: list[str] = []
     ordered_names = [name_map[p["name"]] for p, _ in compatible]
+    for region in region_groups:
+        members = [
+            name_map[name] for name in group_specs[region].get("proxies") or [] if name in name_map
+        ]
+        groups.append(
+            f"{region_name_map[region]} = fallback, "
+            + ", ".join(members)
+            + ", interval=60, timeout=2"
+        )
+    groups.append(
+        "AUTO-FAST = url-test, " + ", ".join(ordered_names)
+        + ", interval=60, tolerance=200, hidden=true"
+    )
     groups.append(
         "AUTO = fallback, AUTO-FAST, "
         + ", ".join(ordered_names)
         + ", interval=60, timeout=2"
     )
     groups.append(
-        "AUTO-FAST = url-test, " + ", ".join(ordered_names)
-        + ", interval=60, tolerance=200, hidden=true"
+        "PROXY = select, AUTO"
+        + "".join(f", {region_name_map[name]}" for name in region_groups)
     )
-    for region in region_groups:
-        members = [
-            name_map[name] for name in group_specs[region].get("proxies") or [] if name in name_map
-        ]
-        groups.append(f"{region} = fallback, " + ", ".join(members) + ", interval=60, timeout=2")
 
-    valid_targets = _SURGE_BUILTINS | {"PROXY", "AUTO", "AUTO-FAST", *region_groups}
-    rules = _surge_rules(clash_config, valid_targets)
+    target_map = {name: name for name in _SURGE_BUILTINS | core_groups}
+    target_map.update(region_name_map)
+    rules = _surge_rules(clash_config, target_map)
     if not rules or not rules[-1].startswith("FINAL,"):
         rules.append("FINAL,PROXY")
 
