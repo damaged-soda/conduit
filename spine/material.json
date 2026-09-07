@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "material": "conduit",
+  "display_name": "梯子",
   "version": "1",
   "programs": [
     {
