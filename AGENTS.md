@@ -27,7 +27,7 @@
   `docker compose up --no-build --pull missing` 运行 `spine/compose.yaml`，保活者
   是骨架——禁构建防 Compose 吞拉取错误回退本机构建，镜像本地在则不碰 registry、
   新 tag 缺镜像才拉且拉失败 fail loud。spine 注册表即版本 pin；部署后确认走
-  `~/.spine/runtime/bin/spine show`，并 curl tailnet `/api/meta` 复核版本
+  `~/.spine/runtime/bin/spine show --nats nats://100.109.38.77:4222`，并 curl tailnet `/api/meta` 复核版本
   （接管先做纯接入，不带探针）。
 - 常规回滚 = 用上一个 tag 重新 publish；配置回滚走本仓 revert PR，合并后重新
   publish。`bin/conduit-deploy` 已废止为路标。

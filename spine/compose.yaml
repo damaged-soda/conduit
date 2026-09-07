@@ -4,7 +4,8 @@
 #              `compose up --no-build --pull missing`，保活者是骨架：禁构建
 #              防 Compose 吞拉取错误回退本机构建；镜像本地在则不碰 registry，
 #              新 tag 缺镜像才拉、拉失败 fail loud。发布特定版本走
-#              `--program-arg serve=--image-tag serve=vX.Y.Z` 重新 publish。
+#              `--program-arg serve=--image-tag --program-arg serve=vX.Y.Z`
+#              重新 publish。
 #   本地开发：  docker compose -f spine/compose.yaml up -d --build
 # tailnet 暴露不在本文件内：宿主 Tailscale Serve 承担（svc:conduit → 127.0.0.1:8000）。
 name: conduit-service

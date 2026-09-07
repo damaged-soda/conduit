@@ -20,7 +20,7 @@ import yaml  # 硬依赖：缺 PyYAML 直接失败，不静默跳过（装 `.[de
 HERE = pathlib.Path(__file__).parent
 GOOD = HERE / "fixtures" / "mihomo.min.yaml"
 BAD = HERE / "fixtures" / "mihomo.bad.yaml"
-DEPLOY_COMPOSE = HERE.parent / "deploy" / "compose.yaml"
+DEPLOY_COMPOSE = HERE.parent / "spine" / "compose.yaml"
 
 # 调用方喂入的结构化 direct-list（占位，对应 good 夹具），覆盖各类型。
 DIRECT = {
