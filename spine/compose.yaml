@@ -1,11 +1,11 @@
 # conduit-service：本文件即生产接线（personal 域架构规范「接线即默认值」，
 # 2026-08-10 裁决）——dev 与生产同一份，默认值可直接上生产：
-#   生产 / rig：docker compose -f deploy/compose.yaml pull \
-#              && docker compose -f deploy/compose.yaml up -d --no-build --pull never
-#              （&& 短路 + --no-build --pull never 缺一不可：Compose 对可构建服务
-#              会吞掉拉取错误回退本机构建，显式 pull 才 fail loud、up 禁构建禁重拉。
-#              发布特定版本：CONDUIT_IMAGE_TAG=vX.Y.Z 对两条命令同时注入，不写 .env）
-#   本地开发：  docker compose -f deploy/compose.yaml up -d --build
+#   生产 / rig：由 spine 质料（本目录 serve.py）投影——前台
+#              `compose up --no-build --pull missing`，保活者是骨架：禁构建
+#              防 Compose 吞拉取错误回退本机构建；镜像本地在则不碰 registry，
+#              新 tag 缺镜像才拉、拉失败 fail loud。发布特定版本走
+#              `--program-arg serve=--image-tag serve=vX.Y.Z` 重新 publish。
+#   本地开发：  docker compose -f spine/compose.yaml up -d --build
 # tailnet 暴露不在本文件内：宿主 Tailscale Serve 承担（svc:conduit → 127.0.0.1:8000）。
 name: conduit-service
 
@@ -38,7 +38,10 @@ services:
       # 默认只绑宿主 localhost（无认证别裸暴露、别绑 0.0.0.0）；
       # 私有网访问走宿主 Tailscale Serve，不改这里。
       - "${CONDUIT_BIND:-127.0.0.1}:${CONDUIT_PORT:-8000}:8000"
-    restart: unless-stopped
+    # 保活者是骨架（serve=前台 compose up），容器不自我复活；停止期限收进
+    # 看护壳的优雅窗口（TERM 5s + KILL 5s），换代与 withdraw 不留生命周期交错。
+    restart: "no"
+    stop_grace_period: 3s
     healthcheck:
       test:
         [

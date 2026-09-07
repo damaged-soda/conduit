@@ -19,17 +19,18 @@
 - tag 的 `build-image` run 成功、`ghcr.io/damaged-soda/conduit:vX.Y.Z` 就绪后，
   将 canonical main 安全快进到 `origin/main`，在 macmini 执行：
   ```sh
-  cd /Users/leavan/work/personal/conduit
-  bin/conduit-deploy --production
+  ~/.spine/runtime/bin/spine publish ~/work/personal/conduit/spine \
+    --nats nats://100.109.38.77:4222 --node host=rig \
+    --program-arg serve=--image-tag --program-arg serve=vX.Y.Z
   ```
-- `bin/conduit-deploy` 是生产部署单写者：只接受 macmini canonical main 且现场要求
-  `HEAD == origin/main`，把仓内 `deploy/compose.yaml` 投影到 rig，先显式 pull，随后
-  禁止 build / 二次 pull 地原地收敛现有 `conduit-service` project，并回验 localhost
-  与 tailnet `/api/meta` 的版本。默认跟踪发布指针 `release`，不维护中央版本 pin；
-  rig 侧用 app-owned 锁拒绝并发部署交错。
-- 常规回滚不改仓内默认值，显式执行
-  `bin/conduit-deploy --production --image-tag vX.Y.Z`；配置回滚走本仓 revert PR，
-  合并后重新部署。
+- 生产由 spine 质料（[`spine/`](spine/)）投影：serve 程序在 rig 上以前台
+  `docker compose up --no-build --pull missing` 运行 `spine/compose.yaml`，保活者
+  是骨架——禁构建防 Compose 吞拉取错误回退本机构建，镜像本地在则不碰 registry、
+  新 tag 缺镜像才拉且拉失败 fail loud。spine 注册表即版本 pin；部署后确认走
+  `~/.spine/runtime/bin/spine show`，并 curl tailnet `/api/meta` 复核版本
+  （接管先做纯接入，不带探针）。
+- 常规回滚 = 用上一个 tag 重新 publish；配置回滚走本仓 revert PR，合并后重新
+  publish。`bin/conduit-deploy` 已废止为路标。
 
 ## secrets 永不进 git
 - 订阅 URL / API key / controller secret / `.env` 一处存、`.gitignore`、**绝不提交**。
