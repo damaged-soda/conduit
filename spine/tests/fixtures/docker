@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""合成 docker：按真实 wrapper 的调用形态起一个根路径 HTTP 服务。
+
+只为验证质料装配（argv、环境、信号、端点），不模拟真实容器。
+- 记录 argv 与关键环境到 $HOME/stub-docker.json（HOME=程序状态目录）
+- 按 CONDUIT_BIND/PORT 起 HTTP：/ 返回 200（conduit 健康判据是根路径）
+- SIGTERM/SIGINT 优雅退出（真实 compose 客户端此时停容器）
+"""
+import json
+import os
+import signal
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+home = Path(os.environ["HOME"])
+assert sys.argv[1] == "compose" and "up" in sys.argv, sys.argv
+(home / "stub-docker.json").write_text(json.dumps({
+    "argv": sys.argv[1:],
+    "image_tag": os.environ.get("CONDUIT_IMAGE_TAG"),
+}))
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+    def do_GET(self):
+        if self.path != "/":
+            status, body = 404, b"nope"
+        else:
+            status, body = 200, b"ok"
+        self.send_response(status)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+server = ThreadingHTTPServer(
+    (os.environ["CONDUIT_BIND"], int(os.environ["CONDUIT_PORT"])), Handler)
+stop = threading.Event()
+for kind in (signal.SIGTERM, signal.SIGINT):
+    signal.signal(kind, lambda *_: stop.set())
+threading.Thread(target=server.serve_forever, daemon=True).start()
+stop.wait()
+time.sleep(1)  # 模拟停止期限内的容器收尾：优雅路径要在看护壳预算内走完

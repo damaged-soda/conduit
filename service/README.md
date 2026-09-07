@@ -4,10 +4,10 @@
 
 ## 跑
 
-**Docker（拉公开镜像）**：只要一份 `deploy/compose.yaml`（不需源码）：
+**Docker（拉公开镜像）**：只要一份 `spine/compose.yaml`（不需源码）：
 ```
-docker compose -f deploy/compose.yaml pull \
-  && docker compose -f deploy/compose.yaml up -d --no-build --pull never
+docker compose -f spine/compose.yaml pull \
+  && docker compose -f spine/compose.yaml up -d --no-build --pull never
 ```
 （`&&` 短路 + `--no-build --pull never` 缺一不可：Compose 对可构建服务会吞掉拉取
 错误回退本机构建，显式 `pull` 才 fail loud、`up` 禁构建禁重拉。）镜像由 GitHub
@@ -18,7 +18,7 @@ Actions 在 push main / 打 `v*` tag 时自动 build 推到
 命名卷 `conduit-data`（含凭据，留 rig 磁盘）。默认只绑宿主 `127.0.0.1:8000`；
 tailnet 暴露走宿主 `tailscale serve`（`svc:conduit`）。**别绑 0.0.0.0**（暂无认证）。
 
-**本地开发（现构建）**：`docker compose -f deploy/compose.yaml up -d --build`。
+**本地开发（现构建）**：`docker compose -f spine/compose.yaml up -d --build`。
 
 **本地裸跑（开发）**：
 ```
@@ -83,7 +83,7 @@ Clash/Mihomo（如 Clash Verge）、Stash、Shadowrocket（节点订阅 + 配置
   上游原序”；默认 `AUTO-FAST` 仍跨全部节点按延迟选优。拖动后服务端产物立即变化，客户端刷新订阅后生效。
 - `GET /api/sub-token`（+ 页面显示可复制 URL）；token 保护节点凭据，DB `--no-access-log`
 
-**部署侧 mesh 旁路输入**（非 secret，不进 DB）：`deploy/compose.yaml` 默认注入 Tailscale 通用常量
+**部署侧 mesh 旁路输入**（非 secret，不进 DB）：`spine/compose.yaml` 默认注入 Tailscale 通用常量
 `CONDUIT_MESH_DOMAIN_SUFFIXES=ts.net`、`CONDUIT_MESH_DNS_SERVER=100.100.100.100` 和
 `CONDUIT_MESH_PROCESS_NAMES=tailscaled`。三者均可用同名环境变量覆盖；其中进程名还可用显式空值
 禁用，域名与 resolver 在 Compose 默认接线中为空时仍回落默认值。裸跑或其他部署方式按实际 mesh
