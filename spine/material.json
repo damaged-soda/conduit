@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "material": "conduit",
-  "labels": {"display_name": "梯子"},
+  "labels": {"display_name": "梯子", "dash_collapsed": "true"},
   "version": "1",
   "programs": [
     {
