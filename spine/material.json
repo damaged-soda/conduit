@@ -3,6 +3,7 @@
   "material": "conduit",
   "labels": {"display_name": "梯子", "dash_collapsed": "true"},
   "version": "1",
+  "package": ["serve.py", "compose.yaml"],
   "programs": [
     {
       "name": "serve",

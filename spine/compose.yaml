@@ -37,7 +37,7 @@ services:
       - conduit-data:/data            # DB 持久化（含明文凭据，留在 rig 磁盘，别外泄）
     ports:
       # 默认只绑宿主 localhost（无认证别裸暴露、别绑 0.0.0.0）；
-      # 私有网访问走宿主 Tailscale Serve，不改这里。
+      # tailnet 走宿主 Tailscale Serve；serve.py --lan-bind 可追加指定 LAN IPv4。
       - "${CONDUIT_BIND:-127.0.0.1}:${CONDUIT_PORT:-8000}:8000"
     # 保活者是骨架（serve=前台 compose up），容器不自我复活；停止期限收进
     # 看护壳的优雅窗口（TERM 5s + KILL 5s），换代与 withdraw 不留生命周期交错。

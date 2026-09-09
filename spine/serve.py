@@ -11,12 +11,24 @@ conduit 镜像是公开包零认证拉，不需要凭据目录。docker engine �
 端口）承担，本质料不改接线。--nats 收下不用（心跳由骨架代发）。
 """
 import argparse
+import ipaddress
 import json
 import os
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+
+
+def lan_address(value):
+    try:
+        address = ipaddress.IPv4Address(value)
+    except ipaddress.AddressValueError as exc:
+        raise argparse.ArgumentTypeError("LAN 地址必须是 RFC1918 IPv4") from exc
+    if not any(address in ipaddress.IPv4Network(network) for network in
+               ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")):
+        raise argparse.ArgumentTypeError("LAN 地址必须是 RFC1918 IPv4")
+    return str(address)
 
 
 def main():
@@ -26,19 +38,30 @@ def main():
     parser.add_argument("--url", default="https://conduit.tail54dd1c.ts.net",
                         help="对外地址，自述给驾驶舱")
     parser.add_argument("--bind", default="127.0.0.1",
-                        help="容器端口映射的宿主侧地址；serve 后端只认回环")
+                        help="主入口宿主地址；默认回环供 Tailscale Serve 使用")
+    parser.add_argument("--lan-bind", type=lan_address,
+                        help="可选的额外 LAN IPv4；开放整个无认证服务，仅用于可信局域网")
     parser.add_argument("--port", default="8000")
     parser.add_argument("--image-tag", default="release")
     args = parser.parse_args()
     root = Path(args.root)
     tmp = root / "endpoints.json.tmp"
-    tmp.write_text(json.dumps({"service": args.url}))
+    endpoints = {"service": args.url}
+    compose_args = ["--file", str(HERE / "compose.yaml")]
+    if args.lan_bind:
+        endpoints["lan"] = f"http://{args.lan_bind}:{args.port}"
+        # Compose 合并 ports 时按 host IP 区分，追加 LAN 映射并保留回环。
+        override = root / "compose-lan.json"
+        override.write_text(json.dumps({"services": {"conduit": {"ports": [
+            f"{args.lan_bind}:{args.port}:8000"
+        ]}}}))
+        compose_args += ["--file", str(override)]
+    tmp.write_text(json.dumps(endpoints))
     tmp.replace(root / "endpoints.json")
     os.environ["CONDUIT_BIND"] = args.bind
     os.environ["CONDUIT_PORT"] = args.port
     os.environ["CONDUIT_IMAGE_TAG"] = args.image_tag
-    os.execvp("docker", ["docker", "compose",
-                         "--file", str(HERE / "compose.yaml"),
+    os.execvp("docker", ["docker", "compose", *compose_args,
                          "up", "--no-color", "--no-build", "--pull", "missing"])
 
 
