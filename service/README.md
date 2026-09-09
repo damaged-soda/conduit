@@ -13,10 +13,24 @@ docker compose -f spine/compose.yaml pull \
 错误回退本机构建，显式 `pull` 才 fail loud、`up` 禁构建禁重拉。）镜像由 GitHub
 Actions 在 push main / 打 `v*` tag 时自动 build 推到
 `ghcr.io/damaged-soda/conduit`（公开包，零认证拉）。compose 默认跟踪 `release`
-（随 `v*` tag 移动的已发布指针）；生产统一从 macmini canonical main 运行
-`bin/conduit-deploy --production`，部署特定版本显式加 `--image-tag vX.Y.Z`。DB 落
+（随 `v*` tag 移动的已发布指针）；生产统一从 macmini canonical main 通过 `spine publish` 部署（见根 `AGENTS.md`）。DB 落
 命名卷 `conduit-data`（含凭据，留 rig 磁盘）。默认只绑宿主 `127.0.0.1:8000`；
 tailnet 暴露走宿主 `tailscale serve`（`svc:conduit`）。**别绑 0.0.0.0**（暂无认证）。
+
+**可信局域网入口**：发布时额外传 `--program-arg serve=--lan-bind` 和
+`--program-arg serve=<现场查得的 RFC1918 IPv4>`。保留回环映射及 Tailscale HTTPS，
+另在同一端口提供 `http://<LAN IPv4>:8000`，驾驶舱自述增加 `lan` 入口。
+LAN 入口开放整个服务（包括无认证管理 API），只用于可信家庭网络，不配置公网转发。
+从该页面复制 Stash 订阅链接即可在同一 Wi-Fi 下导入。地址不写进仓库；地址改变时
+重新 publish。取消 LAN 入口则重新 publish 并省略 `--lan-bind`，保留原镜像版本参数。
+例如（`<LAN IPv4>` 用现场值替换，镜像 tag 保持当前已发布版本）：
+
+```sh
+~/.spine/runtime/bin/spine publish ~/work/personal/conduit/spine \
+  --nats nats://rig.tail54dd1c.ts.net:4222 --node host=rig \
+  --program-arg serve=--image-tag --program-arg serve=vX.Y.Z \
+  --program-arg serve=--lan-bind --program-arg 'serve=<LAN IPv4>'
+```
 
 **本地开发（现构建）**：`docker compose -f spine/compose.yaml up -d --build`。
 
@@ -97,7 +111,7 @@ tailnet 名或进程名。
 初始化订阅优先级，并尽量从最近一次 `imports.raw` 重建节点原序。⚠️ 含明文凭据 = secret 载体，
 别对公网暴露、别进 git。
 
-⚠️ **暂无认证** —— 只在 `127.0.0.1` / tailnet（Tailscale ACL）下可接受，**别裸绑 0.0.0.0**（认证归 later）。
+⚠️ **暂无认证** —— 默认只在 `127.0.0.1` / tailnet（Tailscale ACL）下开放；显式开启 LAN 即信任该局域网内的客户端，**别裸绑 0.0.0.0**（认证归 later）。
 
 ## TODO（后续增量）
 health（健康环 + 剔除）、traffic 监控 + 规则建议、订阅定时刷新、认证、secret 加密。
