@@ -28,8 +28,8 @@ def test_lan_enable_and_remove(tmp_path, monkeypatch):
         "192.168.1.2:8000:8000"]
     assert calls[-1].count("--file") == 2
     assert serve.os.environ["CONDUIT_BIND"] == "127.0.0.1"
-    assert json.loads((tmp_path / "endpoints.json").read_text())["lan"] == (
-        "http://192.168.1.2:8000")
+    assert json.loads((tmp_path / "endpoints.json").read_text()) == {
+        "service": "https://conduit.tail54dd1c.ts.net"}
     monkeypatch.setattr(sys, "argv", argv)
     serve.main()
     assert calls[-1].count("--file") == 1

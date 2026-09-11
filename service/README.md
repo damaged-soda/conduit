@@ -19,7 +19,8 @@ tailnet 暴露走宿主 `tailscale serve`（`svc:conduit`）。**别绑 0.0.0.0*
 
 **可信局域网入口**：发布时额外传 `--program-arg serve=--lan-bind` 和
 `--program-arg serve=<现场查得的 RFC1918 IPv4>`。保留回环映射及 Tailscale HTTPS，
-另在同一端口提供 `http://<LAN IPv4>:8000`，驾驶舱自述增加 `lan` 入口。
+另在同一端口提供 `http://<LAN IPv4>:8000`。驾驶舱只上报 `service` 入口，
+不为同一页面的 LAN 地址重复生成卡片；局域网仍可直接访问该地址。
 LAN 入口开放整个服务（包括无认证管理 API），只用于可信家庭网络，不配置公网转发。
 从该页面复制 Stash 订阅链接即可在同一 Wi-Fi 下导入。地址不写进仓库；地址改变时
 重新 publish。取消 LAN 入口则重新 publish 并省略 `--lan-bind`，保留原镜像版本参数。

@@ -49,7 +49,6 @@ def main():
     endpoints = {"service": args.url}
     compose_args = ["--file", str(HERE / "compose.yaml")]
     if args.lan_bind:
-        endpoints["lan"] = f"http://{args.lan_bind}:{args.port}"
         # Compose 合并 ports 时按 host IP 区分，追加 LAN 映射并保留回环。
         override = root / "compose-lan.json"
         override.write_text(json.dumps({"services": {"conduit": {"ports": [
