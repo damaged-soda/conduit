@@ -71,14 +71,14 @@ class ConduitStoryTest(unittest.TestCase):
         port = self.port
         self.rig.spine_ok(
             "publish", str(self.stage()), "--node", "host=rig",
-            "--program-arg", "serve=--url",
-            "--program-arg", "serve=http://127.0.0.1:%d" % port,
-            "--program-arg", "serve=--port", "--program-arg", "serve=%d" % port,
+            "--unit-arg", "serve=--url",
+            "--unit-arg", "serve=http://127.0.0.1:%d" % port,
+            "--unit-arg", "serve=--port", "--unit-arg", "serve=%d" % port,
             *extra)
 
     def record(self):
         return (self.rig.statuses()["rig"]["materials"].get("conduit", {})
-                .get("programs", {}).get("serve") or {})
+                .get("units", {}).get("serve") or {})
 
     def test_conduit_story(self):
         rig = self.rig
@@ -109,7 +109,7 @@ class ConduitStoryTest(unittest.TestCase):
                                     timeout=5) as response:
             self.assertEqual(response.status, 200)
         # 升级=换代：改装配参数，停旧 compose（SIGTERM 优雅）起新
-        self.publish("--program-arg", "serve=--image-tag", "--program-arg", "serve=v2")
+        self.publish("--unit-arg", "serve=--image-tag", "--unit-arg", "serve=v2")
         rig.wait(lambda: (state / "stub-docker.json").exists()
                  and json.loads((state / "stub-docker.json").read_text())
                  .get("image_tag") == "v2"
