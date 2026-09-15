@@ -17,8 +17,8 @@ Actions 在 push main / 打 `v*` tag 时自动 build 推到
 命名卷 `conduit-data`（含凭据，留 rig 磁盘）。默认只绑宿主 `127.0.0.1:8000`；
 tailnet 暴露走宿主 `tailscale serve`（`svc:conduit`）。**别绑 0.0.0.0**（暂无认证）。
 
-**可信局域网入口**：发布时额外传 `--program-arg serve=--lan-bind` 和
-`--program-arg serve=<现场查得的 RFC1918 IPv4>`。保留回环映射及 Tailscale HTTPS，
+**可信局域网入口**：发布时额外传 `--unit-arg serve=--lan-bind` 和
+`--unit-arg serve=<现场查得的 RFC1918 IPv4>`。保留回环映射及 Tailscale HTTPS，
 另在同一端口提供 `http://<LAN IPv4>:8000`。驾驶舱只上报 `service` 入口，
 不为同一页面的 LAN 地址重复生成卡片；局域网仍可直接访问该地址。
 LAN 入口开放整个服务（包括无认证管理 API），只用于可信家庭网络，不配置公网转发。
@@ -29,8 +29,8 @@ LAN 入口开放整个服务（包括无认证管理 API），只用于可信家
 ```sh
 ~/.spine/runtime/bin/spine publish ~/work/personal/conduit/spine \
   --nats nats://rig.tail54dd1c.ts.net:4222 --node host=rig \
-  --program-arg serve=--image-tag --program-arg serve=vX.Y.Z \
-  --program-arg serve=--lan-bind --program-arg 'serve=<LAN IPv4>'
+  --unit-arg serve=--image-tag --unit-arg serve=vX.Y.Z \
+  --unit-arg serve=--lan-bind --unit-arg 'serve=<LAN IPv4>'
 ```
 
 **本地开发（现构建）**：`docker compose -f spine/compose.yaml up -d --build`。

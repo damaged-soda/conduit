@@ -21,7 +21,7 @@
   ```sh
   ~/.spine/runtime/bin/spine publish ~/work/personal/conduit/spine \
     --nats nats://100.109.38.77:4222 --node host=rig \
-    --program-arg serve=--image-tag --program-arg serve=vX.Y.Z
+    --unit-arg serve=--image-tag --unit-arg serve=vX.Y.Z
   ```
 - 生产由 spine 质料（[`spine/`](spine/)）投影：serve 程序在 rig 上以前台
   `docker compose up --no-build --pull missing` 运行 `spine/compose.yaml`，保活者

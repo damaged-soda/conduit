@@ -1,11 +1,12 @@
 {
-  "schema": 1,
+  "schema": 2,
   "material": "conduit",
   "labels": {"display_name": "梯子", "dash_collapsed": "true"},
   "version": "1",
   "package": ["serve.py", "compose.yaml"],
-  "programs": [
+  "units": [
     {
+      "kind": "service",
       "name": "serve",
       "role": "host",
       "entry": "serve.py"
