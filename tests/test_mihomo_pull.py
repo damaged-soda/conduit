@@ -342,7 +342,7 @@ def test_main_restart_success(tmp_path, monkeypatch):
 
 def test_default_restart_cmd_detection():
     assert pull.default_restart_cmd(exists=lambda p: "LaunchDaemons" in p) == [
-        "sudo", "-n", "brew", "services", "restart", "mihomo"]
+        "sudo", "-n", "launchctl", "kickstart", "-k", "system/homebrew.mxcl.mihomo"]
     assert pull.default_restart_cmd(exists=lambda p: "systemd" in p) == [
         "sudo", "-n", "systemctl", "restart", "mihomo"]
     assert pull.default_restart_cmd(exists=lambda p: False) is None
