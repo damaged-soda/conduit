@@ -18,7 +18,7 @@
   （不中断流量，请求走禁代理的独立 opener，Bearer 不经系统代理），但 mihomo 的
   `PUT /configs` 对监听类配置（controller 全家 / ui / secret / TUN / DoH 等）有
   启动期才生效的成分 —— 仅当「非数据面键」（见 `_RELOAD_SAFE_KEYS`）新旧完全一致
-  时才允许 reload，否则必须重启；reload 失败退回 brew services / systemctl 重启；
+  时才允许 reload，否则必须重启；reload 失败退回 launchctl / systemctl 重启；
   都不可用则必须显式 --no-restart。
 - 权限：替换保留现有文件 mode；全新安装默认 0600（配置含节点凭据）。
 """
@@ -214,9 +214,9 @@ def api_reload(cfg: dict, config: Path, timeout: int = 15) -> bool:
 
 
 def default_restart_cmd(exists=os.path.exists) -> list[str] | None:
-    """macOS brew services（root LaunchDaemon）优先，其次 systemd；都不认识 → None。"""
+    """重启已有服务定义，不让包管理器重新生成并丢失宿主环境变量。"""
     if exists("/Library/LaunchDaemons/homebrew.mxcl.mihomo.plist"):
-        return ["sudo", "-n", "brew", "services", "restart", "mihomo"]
+        return ["sudo", "-n", "launchctl", "kickstart", "-k", "system/homebrew.mxcl.mihomo"]
     if exists("/etc/systemd/system/mihomo.service"):
         return ["sudo", "-n", "systemctl", "restart", "mihomo"]
     return None

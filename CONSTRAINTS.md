@@ -28,6 +28,7 @@
 ## full 模式（TUN）必须项
 full（带 dns+tun）的配置除上面三处外，还有三条不变量，缺一即出事（实战踩过）：
 - **TUN 必须同时接管 IPv6**：`ipv6: true` + `dns.ipv6: true` + `tun.inet6-address`（auto-route 才会把 `::/0` 也指向 TUN）。否则系统 IPv6 默认路由仍在物理网卡，浏览器走 IPv6/HTTP3 会**绕过代理直连** → 出口变成本机真实地区 → 按区域封的站（如 claude.ai 看到 `loc=CN`）直接不可用。`route-exclude` 须含 IPv6 本地段（`::1`/`fc00::/7`（含 overlay ULA）/`fe80::/10`），保私有网/SSH 不断。
+- **宿主启动不能静默取消 IPv6 接管**：mihomo 启动时若尚未检测到系统 IPv6，会忽略配置里的 TUN IPv6 地址；之后网卡取得公网 IPv6 也不能据此认定 TUN 已补齐。要求双栈接管的宿主须在 mihomo 服务环境设置 `SKIP_SYSTEM_IPV6_CHECK=1`，重启后验证 controller 的 `tun.inet6-address` 和实际 IPv6 路由；仅检查 YAML 或 `mihomo -t` 不够。该变量属于宿主服务配置，不是订阅 YAML。见 [宿主启动与验证](README.md#宿主启动与验证)。
 - **TUN 里的真实 IP 连接必须能还原 DIRECT 域名上下文**：full 模式遇到 DIRECT 域名时必须开启 `sniffer`（至少 TLS/443 + QUIC/443 + HTTP/80，`parse-pure-ip: true`，`override-destination: true`），并把这些域名放进 `force-domain` 记录意图。否则 fake-ip 放行后的真实 AAAA 连接进入 TUN 时只剩 IP，`DOMAIN-SUFFIX,...,DIRECT` 可能无法命中，控制面/mesh 域名会被透明代理路径误伤。
 - **DNS 必须有 `default-nameserver`（引导）**：含 `system` 任何环境可引导。否则 mihomo 没法做最初解析（连 DoH 服务器都解析不了）→ DNS 引导死锁 → 出网全断。
 - **订阅自带节点 DNS 必须按来源域名隔离**：仅允许摄入 `dns.proxy-server-nameserver`，不得继承订阅的
