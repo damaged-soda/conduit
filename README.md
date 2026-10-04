@@ -25,7 +25,8 @@ conduit **不感知任何具体拓扑** —— 主机叫什么、有没有私有
 macOS root LaunchDaemon：在已有 plist 的 `EnvironmentVariables` 字典中加入该变量，
 保留其他字段、root 所有权和权限。修改前备份服务定义，并设置不依赖代理的自动回退；
 修改后用 `launchctl bootout` / `bootstrap` 重新加载定义。日常重启用
-`sudo launchctl kickstart -k system/homebrew.mxcl.mihomo`，本仓 pull hook 也使用该入口，
+`sudo launchctl kickstart -k system/<标签>`，本仓 pull hook 也使用该入口；标签旧版 Homebrew 为
+`homebrew.mxcl.mihomo`、新版为 `sh.brew.mihomo`，以 `/Library/LaunchDaemons/` 下实际存在的为准，
 保留已加载的服务环境；服务未加载时报错，不转而重建服务定义。
 Homebrew 的 root service 不支持用户 `services/mihomo.env` 覆盖；手动执行
 `brew services restart` 或升级后若重建了 plist，必须重新应用并检查该环境变量。

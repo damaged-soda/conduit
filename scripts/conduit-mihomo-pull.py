@@ -213,10 +213,15 @@ def api_reload(cfg: dict, config: Path, timeout: int = 15) -> bool:
         return False
 
 
+# Homebrew 的 root service 标签：旧版是 homebrew.mxcl.<formula>，新版改为 sh.brew.<formula>。
+_LAUNCHD_LABELS = ("homebrew.mxcl.mihomo", "sh.brew.mihomo")
+
+
 def default_restart_cmd(exists=os.path.exists) -> list[str] | None:
     """重启已有服务定义，不让包管理器重新生成并丢失宿主环境变量。"""
-    if exists("/Library/LaunchDaemons/homebrew.mxcl.mihomo.plist"):
-        return ["sudo", "-n", "launchctl", "kickstart", "-k", "system/homebrew.mxcl.mihomo"]
+    for label in _LAUNCHD_LABELS:
+        if exists(f"/Library/LaunchDaemons/{label}.plist"):
+            return ["sudo", "-n", "launchctl", "kickstart", "-k", f"system/{label}"]
     if exists("/etc/systemd/system/mihomo.service"):
         return ["sudo", "-n", "systemctl", "restart", "mihomo"]
     return None
