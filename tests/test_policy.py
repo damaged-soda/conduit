@@ -55,6 +55,23 @@ def test_stash_tailscale_name_is_reserved_from_upstream_nodes():
     assert cfg["proxies"][1]["type"] == "trojan"
 
 
+def test_stash_gets_only_fake_ip_filter_for_direct_domains():
+    policy = {
+        "routes": [
+            {"name": "通行密钥", "to": "DIRECT", "domain": ["cable.auth.com"]},
+            {"name": "下载", "to": "DIRECT", "domain_suffix": ["cdn-apple.com"]},
+            {"name": "tailnet", "to": "DIRECT", "domain_suffix": ["ts.net"], "domain": ["a.tail1.ts.net"]},
+            {"name": "代理", "to": "PROXY", "domain": ["example.com"]},
+        ],
+        "final": "PROXY",
+    }
+    stash = build_subscription([_node("JP")], {}, policy=policy, stash_tailscale=True)
+    # Stash 自管 DNS/TUN：只补 fake-ip-filter，让 DIRECT 域名拿真实地址；tailnet 域名先走 TAILNET，保留假地址
+    assert stash["dns"] == {"fake-ip-filter": ["cable.auth.com", "+.cdn-apple.com"]}
+    assert "tun" not in stash
+    assert "dns" not in build_subscription([_node("JP")], {}, policy=policy)
+
+
 def test_stash_tailnet_rules_precede_generic_direct_baseline():
     cfg = build_subscription([_node("JP")], {}, stash_tailscale=True)
     groups = {group["name"]: group for group in cfg["proxy-groups"]}
