@@ -42,6 +42,7 @@ _CORE_KEYS = {"name", "type", "server", "port"}
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 _STASH_TAILSCALE_NAME = "TAILSCALE"
 _STASH_TAILNET_GROUP = "TAILNET"
+_TAILNET_DOMAIN_SUFFIX = "ts.net"
 _TAILSCALE_IPV4_CIDR = "100.64.0.0/10"
 _TAILSCALE_IPV6_CIDR = "fd7a:115c:a1e0::/48"
 
@@ -137,7 +138,7 @@ def _direct_rules(direct: dict) -> list[str]:
 def _tailnet_rules(target: str) -> list[str]:
     """Stash 内置 Tailscale 的确定性入口；必须排在通用 DIRECT 兜底之前。"""
     return [
-        f"DOMAIN-SUFFIX,ts.net,{target}",
+        f"DOMAIN-SUFFIX,{_TAILNET_DOMAIN_SUFFIX},{target}",
         f"IP-CIDR,{_TAILSCALE_IPV4_CIDR},{target},no-resolve",
         f"IP-CIDR6,{_TAILSCALE_IPV6_CIDR},{target},no-resolve",
     ]
@@ -148,6 +149,17 @@ def _fake_ip_filter(direct: dict) -> list[str]:
     out += [f"+.{s}" for s in direct.get("domain_suffix", [])]
     out += [f"+.{w[2:]}" if w.startswith("*.") else w for w in direct.get("domain_wildcard", [])]
     return out
+
+
+def _policy_direct(policy: dict) -> tuple[list[str], list[str]]:
+    """policy 里 to==DIRECT 的 route 的显式域名（fake-ip-filter 形态）与 IP 段。"""
+    domains: list[str] = []
+    ips: list[str] = []
+    for r in policy.get("routes", []):
+        if r.get("to") == "DIRECT":
+            domains += [f"+.{x}" for x in r.get("domain_suffix", [])] + list(r.get("domain", []))
+            ips += list(r.get("ip_cidr", []))
+    return domains, ips
 
 
 def _dedupe(seq: list[str]) -> list[str]:
@@ -288,6 +300,7 @@ def build_subscription(
     stash_tailscale：加入一个 Stash 专用的内置 Tailscale 节点和单成员 `TAILNET` 策略组，
     并把 MagicDNS / Tailscale IP 规则置于通用 DIRECT 规则之前。节点不携带 auth-key、hostname
     或 tailnet 地址，由每台 Stash 客户端在应用内交互认证。
+    Stash 产物另带只含 `fake-ip-filter` 的 dns 段（DIRECT 显式域名），其余 DNS/TUN 仍由 Stash 自管。
     """
     tags = tags or {}
     policy = policy or DEFAULT_POLICY
@@ -306,12 +319,7 @@ def build_subscription(
         # rule#0 三处之二（fake-ip-filter + tun route-exclude）：从 policy 里 to==DIRECT 的 route 派生
         # 显式域名/IP（tailnet/DERP/控制面），让它们解析真 IP + 不被 TUN 抓走。
         # 同时交给 sniffer：TUN 接管 IPv6 后，纯 IP 连接仍可用 SNI/Host 还原域名并命中 DIRECT。
-        d_domains: list[str] = []
-        d_ips: list[str] = []
-        for r in policy.get("routes", []):
-            if r.get("to") == "DIRECT":
-                d_domains += [f"+.{x}" for x in r.get("domain_suffix", [])] + list(r.get("domain", []))
-                d_ips += list(r.get("ip_cidr", []))
+        d_domains, d_ips = _policy_direct(policy)
         pdns = policy.get("dns", {})
         direct_domains = _fake_ip_filter(direct)
         dns = {
@@ -358,6 +366,19 @@ def build_subscription(
             # route-exclude 已含 ::1 / fc00::/7（含 tailscale ULA IPv6）/ fe80::/10 → 本地+tailnet IPv6 仍直连，SSH 不断。
             "route-exclude-address": _BASELINE_DIRECT + list(direct.get("ip_cidr", [])) + d_ips,
         }
+    elif stash_tailscale:
+        # Stash 自管 TUN/DNS 且默认 fake-ip；只补 fake-ip-filter，让 DIRECT 域名拿真实地址。
+        # iOS 让部分系统流量绕过 VPN（如走 Apple 推送设施的通行密钥中转 cable.auth.com），
+        # 它们拿到假地址后只能直连 198.18.x.x → 连接失败。
+        # tailnet 域名例外：它们先命中 TAILNET，只能在 tailnet 内解析，必须保留假地址。
+        fake_ip_filter = [
+            d
+            for d in _dedupe([*_fake_ip_filter(direct), *_policy_direct(policy)[0]])
+            if d.removeprefix("+.") != _TAILNET_DOMAIN_SUFFIX
+            and not d.endswith(f".{_TAILNET_DOMAIN_SUFFIX}")
+        ]
+        if fake_ip_filter:
+            cfg["dns"] = {"fake-ip-filter": fake_ip_filter}
 
     # 剔除隔离 / 不支持 UDP 的节点 + 算每个节点的 region（override 优先）
     active: list[tuple[Node, str]] = []
