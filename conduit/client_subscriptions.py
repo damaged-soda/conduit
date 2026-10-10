@@ -22,7 +22,6 @@ _MRS_BASE = "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo
 _CORE_KEYS = {"name", "type", "server", "port"}
 _CLIENT_BUILTINS = {"DIRECT", "REJECT", "REJECT-DROP"}
 _CORE_GROUPS = {"PROXY", "AUTO", "AUTO-FAST"}
-_SHADOWROCKET_TEST_URL = "http://www.gstatic.com/generate_204"
 
 
 class NoCompatibleProxies(ValueError):
@@ -600,23 +599,15 @@ def render_shadowrocket_config(
     )
     markers = _shadowrocket_region_markers(ordered_regions)
 
-    groups: list[str] = []
-    for region in regions:
-        groups.append(
-            f"{region_name_map[region]} = fallback,{subscription_name},use=true,"
-            f"policy-regex-filter=^@{markers[region]}:,interval=60,timeout=2,"
-            f"url={_SHADOWROCKET_TEST_URL}"
-        )
-    groups.append(
-        f"AUTO = url-test,{subscription_name},use=true,interval=60,timeout=2,"
-        f"tolerance=200,url={_SHADOWROCKET_TEST_URL}"
-    )
-    groups.append(
-        "PROXY = select,AUTO"
-        + "".join(f",{region_name_map[region]}" for region in regions)
-    )
+    groups = [
+        f"{region_name_map[region]} = select,{subscription_name},use=true,"
+        f"policy-regex-filter=^@{markers[region]}:"
+        for region in regions
+    ]
+    groups.append("PROXY = select," + ",".join(region_name_map[r] for r in regions))
 
     target_map = {name: name for name in _CLIENT_BUILTINS | _CORE_GROUPS}
+    target_map.update({"AUTO": "PROXY", "AUTO-FAST": "PROXY"})
     target_map.update(region_name_map)
     rules = _client_rules(
         clash_config,
@@ -679,26 +670,12 @@ def render_surge_subscription(
         members = [
             name_map[name] for name in group_specs[region].get("proxies") or [] if name in name_map
         ]
-        groups.append(
-            f"{region_name_map[region]} = fallback, "
-            + ", ".join(members)
-            + ", interval=60, timeout=2"
-        )
-    groups.append(
-        "AUTO-FAST = url-test, " + ", ".join(ordered_names)
-        + ", interval=60, tolerance=200, hidden=true"
-    )
-    groups.append(
-        "AUTO = fallback, AUTO-FAST, "
-        + ", ".join(ordered_names)
-        + ", interval=60, timeout=2"
-    )
-    groups.append(
-        "PROXY = select, AUTO"
-        + "".join(f", {region_name_map[name]}" for name in region_groups)
-    )
+        groups.append(f"{region_name_map[region]} = select, " + ", ".join(members))
+    choices = [region_name_map[name] for name in region_groups] or ordered_names
+    groups.append("PROXY = select, " + ", ".join(choices))
 
     target_map = {name: name for name in _CLIENT_BUILTINS | core_groups}
+    target_map.update({"AUTO": "PROXY", "AUTO-FAST": "PROXY"})
     target_map.update(region_name_map)
     rules = _client_rules(clash_config, target_map, destination_port="DEST-PORT")
     if not rules or not rules[-1].startswith("FINAL,"):

@@ -426,9 +426,9 @@ def test_shadowrocket_and_surge_subscription_endpoints():
         "update-url = https://testserver/sub/shadowrocket-config?token="
         in shadowrocket_config.text
     )
-    assert "US = fallback,conduit,use=true,policy-regex-filter=^@US:" in shadowrocket_config.text
-    assert "JP = fallback,conduit,use=true,policy-regex-filter=^@JP:" in shadowrocket_config.text
-    assert "PROXY = select,AUTO,JP,US" in shadowrocket_config.text
+    assert "US = select,conduit,use=true,policy-regex-filter=^@US:" in shadowrocket_config.text
+    assert "JP = select,conduit,use=true,policy-regex-filter=^@JP:" in shadowrocket_config.text
+    assert "PROXY = select,JP,US" in shadowrocket_config.text
     assert shadowrocket_config.text.rstrip().endswith("FINAL,PROXY")
     assert shadowrocket_config.headers["content-disposition"].endswith(
         "conduit-shadowrocket.conf"
@@ -548,14 +548,16 @@ def test_sub_stash_keeps_tailscale_node_when_upstream_pool_is_empty():
     cfg = yaml.safe_load(c.get("/sub/stash", params={"token": token}).text)
     assert cfg["proxies"] == [{"name": "TAILSCALE", "type": "tailscale"}]
     assert cfg["proxy-groups"] == [
-        {"name": "TAILNET", "type": "select", "proxies": ["TAILSCALE"]}
+        {"name": "TAILNET", "type": "select", "proxies": ["TAILSCALE"]},
+        {"name": "PROXY", "type": "select", "proxies": ["REJECT"]},
     ]
-    assert cfg["rules"] == [
+    assert cfg["rules"][:3] == [
         "DOMAIN-SUFFIX,ts.net,TAILNET",
         "IP-CIDR,100.64.0.0/10,TAILNET,no-resolve",
         "IP-CIDR6,fd7a:115c:a1e0::/48,TAILNET,no-resolve",
-        "MATCH,DIRECT",
     ]
+    assert cfg["rules"][-1] == "MATCH,PROXY"
+    assert "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve" in cfg["rules"]
 
 
 def test_sub_clash_uses_subscription_priority_prefix_and_stable_region_order():
@@ -585,8 +587,8 @@ def test_sub_clash_uses_subscription_priority_prefix_and_stable_region_order():
     assert groups["SG"]["proxies"] == [
         "[High] Singapore high", "[Low] Singapore low 2", "[Low] Singapore low 1"
     ]
-    assert groups["AUTO-FAST"]["proxies"] == names
-    assert groups["PROXY"]["proxies"] == ["AUTO", "HK", "JP", "SG"]
+    assert all(g["type"] == "select" for g in groups.values())
+    assert groups["PROXY"]["proxies"] == ["HK", "JP", "SG"]
 
     c.patch(f"/api/subscriptions/{high}", json={"name": "Gold"})
     renamed = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
@@ -743,11 +745,12 @@ def test_invalid_source_dns_metadata_does_not_replace_snapshot():
     assert len(c.get(f"/api/subscriptions/{sub_id}/nodes").json()) == 2
 
 
-def test_sub_clash_empty_is_valid_all_direct():
+def test_sub_clash_empty_pool_rejects_proxy_traffic():
     c = _client()
     token = c.get("/api/sub-token").json()["token"]
     cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
-    assert cfg["rules"] == ["MATCH,DIRECT"]  # 无节点 → 合法的全直连配置
+    assert cfg["rules"][-1] == "MATCH,PROXY"
+    assert cfg["proxy-groups"] == [{"name": "PROXY", "type": "select", "proxies": ["REJECT"]}]
 
 
 def test_policy_edit_and_reset():
@@ -897,7 +900,8 @@ def test_groups_endpoint():
     sid = _mksub(c)
     c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
     t = c.get("/api/groups").json()["targets"]
-    assert {"DIRECT", "REJECT", "PROXY", "AUTO"} <= set(t)
+    assert {"DIRECT", "REJECT", "PROXY"} <= set(t)
+    assert "AUTO" not in t and "AUTO-FAST" not in t
 
 
 def test_ruleset_inspect():
@@ -956,7 +960,8 @@ def test_region_override_reflects_in_nodes_and_grouping():
     token = c.get("/api/sub-token").json()["token"]
     cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
     gnames = {g["name"] for g in cfg["proxy-groups"]}
-    assert {"PROXY", "AUTO", "JP"} <= gnames
+    assert {"PROXY", "JP"} <= gnames
+    assert "AUTO" not in gnames and "AUTO-FAST" not in gnames
 
 
 def test_quarantine_excludes_from_subscription():
@@ -1009,3 +1014,20 @@ def test_index_page():
     assert 'id="meta"' in r.text
     assert "SOURCE_MODES" in r.text and "保存内容并导入" in r.text
     assert "保存名字" not in r.text and "保存 URL" not in r.text
+
+
+@pytest.mark.parametrize("path,params", [
+    ("/sub/clash", {}), ("/sub/clash", {"full": "1"}), ("/sub/stash", {}),
+])
+def test_subscriptions_only_allow_manual_selection_and_remap_legacy_auto(path, params):
+    c = _client()
+    sid = _mksub(c)
+    c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
+    c.put("/api/policy", json={"routes": [{"to": "AUTO", "domain": ["legacy.example"]}], "final": "AUTO"})
+    token = c.get("/api/sub-token").json()["token"]
+    cfg = yaml.safe_load(c.get(path, params={"token": token, **params}).text)
+    assert all(g["type"] == "select" for g in cfg["proxy-groups"])
+    assert not ({"AUTO", "AUTO-FAST"} & {g["name"] for g in cfg["proxy-groups"]})
+    assert cfg["profile"]["store-selected"] is True
+    assert "DOMAIN,legacy.example,PROXY" in cfg["rules"]
+    assert cfg["rules"][-1] == "MATCH,PROXY"

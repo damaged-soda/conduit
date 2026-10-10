@@ -1,10 +1,10 @@
 """render：把（已打标 / 剔除后的 **active**）节点 + 调用方输入，渲染成一份 mihomo 配置。
 
-输入契约：`nodes` 必须是「允许进入配置」的 active 节点（隔离区 / 长期不健康的已在上游剔除）。
+输入契约：`nodes` 必须是「允许进入配置」的 active 节点（人工隔离的已在上游剔除）。
 render 不做 quarantine 过滤。
 
 v1（最小可用）：
-- 单 `PROXY` fallback 组 over 所有 active 节点；
+- 单 `PROXY` select 组 over 所有 active 节点；节点仅由用户手动切换；
 - direct-list 落三处：DIRECT 规则（最前）+ fake-ip 放行 + TUN route-exclude；
 - overlay 驱动 listen / controller / tun / dns；默认不开 allow-lan（生产安全）；
 - proxy 名去重 + 避开保留/group 名；空节点 fail-closed；params 不得覆盖核心身份字段；
@@ -27,8 +27,6 @@ from .models import Node
 from .policy import DEFAULT_POLICY, policy_rules, rule_providers_block
 from .tags import region_of, region_sort_key
 from .udp import node_supports_udp
-
-_HEALTH_URL = "http://www.gstatic.com/generate_204"
 
 # 订阅兜底直连：私网 / loopback / link-local / CGNAT(含 tailscale 100.64/10)。
 # 防"全代理"把本地 / 私有网流量也抓走（rule#0 基线）。调用方的 direct-list 再叠在其上。
@@ -82,37 +80,9 @@ def _assign_names(
     return out
 
 
-def _fallback_group(name: str, proxies: list[str]) -> dict:
-    """一个 fallback 组（用首个存活节点，仅故障时切换 → 人无感，目标 #3）。"""
-    return {
-        "name": name,
-        "type": "fallback",
-        "proxies": proxies,
-        "url": _HEALTH_URL,
-        "interval": 60,
-        "timeout": 2000,
-        "lazy": False,
-        "expected-status": "204",
-    }
-
-
-def _url_test_group(name: str, proxies: list[str], tolerance: int = 200, hidden: bool = False) -> dict:
-    """一个 url-test 组（按延迟自动选优；tolerance 避免小抖动频繁切换）。"""
-    group = {
-        "name": name,
-        "type": "url-test",
-        "proxies": proxies,
-        "url": _HEALTH_URL,
-        "interval": 60,
-        "timeout": 2000,
-        "lazy": False,
-        "expected-status": "204",
-        "tolerance": tolerance,
-        "max-failed-times": 1,
-    }
-    if hidden:
-        group["hidden"] = True
-    return group
+def _select_group(name: str, proxies: list[str]) -> dict:
+    """只允许用户手动选择；故障和延迟变化都不改变选中节点。"""
+    return {"name": name, "type": "select", "proxies": proxies}
 
 
 def _node_to_proxy(n: Node, name: str) -> dict:
@@ -252,18 +222,8 @@ def build_config(nodes: list[Node], direct: dict, overlay: dict) -> dict:
         }
 
     cfg["proxies"] = proxies
-    cfg["proxy-groups"] = [
-        {
-            "name": "PROXY",
-            "type": "fallback",
-            "proxies": names,
-            "url": _HEALTH_URL,
-            "interval": 60,
-            "timeout": 2000,
-            "lazy": False,
-            "expected-status": "204",
-        }
-    ]
+    cfg["proxy-groups"] = [_select_group("PROXY", names)]
+    cfg["profile"] = {"store-selected": True}
     cfg["rules"] = _direct_rules(direct) + ["MATCH,PROXY"]
     return cfg
 
@@ -290,9 +250,9 @@ def build_subscription(
     proxies/groups/rules 的配置。external-controller 不放进来（客户端自管 + 安全）。
 
     分组结构（地区分组 + 顶层选择）：
-      - `PROXY` (select)：顶层手动选 [AUTO, <各地区>]，默认 AUTO；规则只引用组名。
-      - `AUTO` (fallback)：优先走隐藏的 `AUTO-FAST` url-test(tolerance=200)，再用原始节点兜底。
-      - 每个 region 一个 fallback 组。
+      - `PROXY` (select)：顶层手动选地区；规则只引用组名。
+      - 每个 region 一个 select 组；故障和延迟变化都不会切换节点。
+      - 不生成 AUTO / AUTO-FAST；客户端保存手动选择。
 
     tags：`{access_id: {"region": override|None, "quarantined": bool}}`（service 传入）。隔离的剔除；
     region 优先用 override，否则 `region_of(raw_name)`。标签按 access_id 存 → 跟着节点走，不跟订阅。
@@ -313,6 +273,7 @@ def build_subscription(
         "mode": "rule",
         "log-level": "info",
         "unified-delay": True,
+        "profile": {"store-selected": True},
         "ipv6": False,
     }
     if full:
@@ -404,13 +365,17 @@ def build_subscription(
     )
     client_group_names = {group["name"] for group in client_groups}
     tailnet_target = _STASH_TAILNET_GROUP if stash_tailscale else None
-    if not active:  # 无可用节点：给个合法的全直连配置，别产出坏订阅
+    if not active:  # 无可用节点：保留明确的直连规则，其余拒绝，不自动换出口
         cfg["proxies"] = client_proxies
-        if client_groups:
-            cfg["proxy-groups"] = client_groups
-        cfg["rules"] = (
-            _tailnet_rules(tailnet_target) if tailnet_target else []
-        ) + ["MATCH,DIRECT"]
+        cfg["proxy-groups"] = client_groups + [_select_group("PROXY", ["REJECT"])]
+        providers = rule_providers_block(policy)
+        if providers:
+            cfg["rule-providers"] = providers
+        cfg["rules"] = subscription_rules(
+            direct, policy,
+            lambda to: to if to in {"DIRECT", "REJECT", *client_group_names} else "PROXY",
+            tailnet_target=tailnet_target,
+        )
         return cfg
 
     if full:
@@ -445,16 +410,12 @@ def build_subscription(
     for (_, r), nm in zip(active, names):
         by_region.setdefault(r, []).append(nm)
 
-    groups: list[dict] = client_groups + [
-        {"name": "PROXY", "type": "select", "proxies": ["AUTO", *region_order]}
-    ]
-    groups.append(_fallback_group("AUTO", ["AUTO-FAST", *names]))
-    groups.append(_url_test_group("AUTO-FAST", names, hidden=True))
-    groups += [_fallback_group(r, by_region[r]) for r in region_order]
+    groups = client_groups + [_select_group("PROXY", region_order)]
+    groups += [_select_group(r, by_region[r]) for r in region_order]
     cfg["proxy-groups"] = groups
 
     # rule-providers（被 routes 引用的 .mrs）；指向「当前不存在的组」的 route / final 落到 PROXY，保证合法
-    valid = {"DIRECT", "REJECT", "PROXY", "AUTO", *region_order} | client_group_names
+    valid = {"DIRECT", "REJECT", "PROXY", *region_order} | client_group_names
     providers = rule_providers_block(policy)
     if providers:
         cfg["rule-providers"] = providers

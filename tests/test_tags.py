@@ -79,18 +79,12 @@ def test_grouping_by_region():
     cfg = build_subscription(nodes, {})
     groups = {g["name"]: g for g in cfg["proxy-groups"]}
     assert groups["PROXY"]["type"] == "select"
-    assert groups["PROXY"]["proxies"][0] == "AUTO"  # 默认走 AUTO
-    assert {"HK", "JP", UNKNOWN, "AUTO", "AUTO-FAST", "PROXY"} <= set(groups)
+    assert groups["PROXY"]["proxies"] == ["HK", "JP", UNKNOWN]
+    assert set(groups) == {"HK", "JP", UNKNOWN, "PROXY"}
     assert len(groups["HK"]["proxies"]) == 2
-    assert groups["AUTO"]["type"] == "fallback"
-    assert groups["AUTO"]["proxies"][0] == "AUTO-FAST"
-    assert len(groups["AUTO-FAST"]["proxies"]) == 4  # 全部非隔离
-    assert groups["AUTO-FAST"]["type"] == "url-test"
-    assert groups["AUTO-FAST"]["tolerance"] == 200
-    assert groups["AUTO-FAST"]["max-failed-times"] == 1
-    assert groups["AUTO-FAST"]["hidden"] is True
-    assert groups["HK"]["type"] == "fallback"
-    assert "HK" in groups["PROXY"]["proxies"] and UNKNOWN in groups["PROXY"]["proxies"]
+    assert all(g["type"] == "select" for g in groups.values())
+    assert all(not ({"url", "interval", "tolerance"} & g.keys()) for g in groups.values())
+    assert cfg["profile"]["store-selected"] is True
 
 
 def test_quarantine_excludes_node_and_empty_region():
@@ -119,4 +113,7 @@ def test_region_override_wins():
 def test_all_quarantined_fail_closed():
     n = _node("🇭🇰 HK 01")
     cfg = build_subscription([n], {}, tags={n.access_id.value: {"quarantined": True}})
-    assert cfg["proxies"] == [] and cfg["rules"] == ["MATCH,DIRECT"]
+    assert cfg["proxies"] == []
+    assert cfg["proxy-groups"] == [{"name": "PROXY", "type": "select", "proxies": ["REJECT"]}]
+    assert cfg["rules"][-1] == "MATCH,PROXY"
+    assert "IP-CIDR,100.64.0.0/10,DIRECT,no-resolve" in cfg["rules"]
