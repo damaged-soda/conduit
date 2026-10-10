@@ -94,8 +94,18 @@ def fetch(url: str) -> str:
 def build_config(sub_text: str, overlay: dict | None) -> dict:
     """解析订阅 → 叠 overlay。输入不像完整配置时 fail-closed。"""
     cfg = yaml.safe_load(sub_text)
-    if not isinstance(cfg, dict) or not cfg.get("proxies") or not cfg.get("proxy-groups"):
-        raise PullError("订阅内容不像完整 mihomo 配置（缺 proxies / proxy-groups）——拒绝安装")
+    # proxies: [] 是生成器在空节点池时的有效输出，不能等同于字段缺失。
+    # 分组和规则仍必须完整；具体引用/语法继续由安装前的 mihomo -t 校验。
+    if (
+        not isinstance(cfg, dict)
+        or any(not isinstance(cfg.get(key), list) for key in ("proxies", "proxy-groups", "rules"))
+        or not cfg["proxy-groups"]
+        or not cfg["rules"]
+    ):
+        raise PullError(
+            "订阅内容不像完整 mihomo 配置"
+            "（proxies / proxy-groups / rules 缺失、类型错误或分组/规则为空）——拒绝安装"
+        )
     if overlay:
         cfg = deep_merge(cfg, overlay)
     return cfg

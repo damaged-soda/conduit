@@ -12,6 +12,10 @@ import sys
 import urllib.error
 
 import pytest
+import yaml
+
+from conduit.ingest import normalize
+from conduit.render import build_subscription
 
 SCRIPT = pathlib.Path(__file__).parent.parent / "scripts" / "conduit-mihomo-pull.py"
 spec = importlib.util.spec_from_file_location("conduit_mihomo_pull", SCRIPT)
@@ -61,6 +65,74 @@ def test_build_config_fail_closed_on_garbage():
     for bad in ("", "not: a config", "proxies: []", "- just\n- a\n- list\n"):
         with pytest.raises(pull.PullError):
             pull.build_config(bad, None)
+
+
+@pytest.mark.parametrize("bad", [
+    {"proxy-groups": [{"name": "PROXY", "type": "select", "proxies": ["REJECT"]}],
+     "rules": ["MATCH,PROXY"]},
+    {"proxies": None, "proxy-groups": [{}], "rules": ["MATCH,PROXY"]},
+    {"proxies": {}, "proxy-groups": [{}], "rules": ["MATCH,PROXY"]},
+    {"proxies": [], "proxy-groups": None, "rules": ["MATCH,PROXY"]},
+    {"proxies": [], "proxy-groups": {}, "rules": ["MATCH,PROXY"]},
+    {"proxies": [], "proxy-groups": [], "rules": ["MATCH,PROXY"]},
+    {"proxies": [], "proxy-groups": [{"name": "PROXY", "type": "select", "proxies": ["REJECT"]}]},
+    {"proxies": [], "proxy-groups": [{}], "rules": None},
+    {"proxies": [], "proxy-groups": [{}], "rules": "MATCH,PROXY"},
+    {"proxies": [], "proxy-groups": [{}], "rules": []},
+])
+def test_build_config_rejects_incomplete_subscriptions_even_with_overlay(bad):
+    # overlay 不能把残缺/截断的订阅补成貌似完整的配置后替换当前节点。
+    overlay = yaml.safe_load(SUB)
+    with pytest.raises(pull.PullError):
+        pull.build_config(yaml.safe_dump(bad), overlay)
+
+
+@pytest.mark.parametrize("full", [False, True], ids=["pure", "full"])
+@pytest.mark.parametrize("empty_cause", ["removed", "quarantined"])
+def test_generated_empty_pool_replaces_and_reloads_previous_nodes(
+    tmp_path, monkeypatch, full, empty_cause,
+):
+    node = normalize("""proxies:
+- {name: former, type: socks5, server: proxy.invalid, port: 1080, udp: true}
+""", "clash", "test")[0]
+    policy = {"final": "PROXY"}
+    previous = build_subscription([node], {}, full=full, policy=policy)
+    assert len(previous["proxies"]) == 1
+    empty = build_subscription(
+        [] if empty_cause == "removed" else [node], {}, full=full, policy=policy,
+        tags={node.access_id.value: {"quarantined": True}} if empty_cause == "quarantined" else {},
+    )
+    overlay = {"external-controller": "127.0.0.1:9090"}
+    overlay_file = tmp_path / "overlay.yaml"
+    overlay_file.write_text(yaml.safe_dump(overlay))
+    config = tmp_path / "config.yaml"
+    previous_text = yaml.safe_dump(pull.deep_merge(previous, overlay))
+    config.write_text(previous_text)
+    config.chmod(0o600)
+    _stub_common(monkeypatch, yaml.safe_dump(empty))
+    monkeypatch.setattr(pull, "default_restart_cmd", lambda: None)
+    validated, activated = [], []
+    monkeypatch.setattr(
+        pull, "validate", lambda binary, home, text: validated.append(yaml.safe_load(text)),
+    )
+
+    def reload(cfg, path):
+        assert yaml.safe_load(path.read_text()) == cfg
+        activated.append(cfg)
+        return True
+
+    monkeypatch.setattr(pull, "api_reload", reload)
+    assert pull.main([*_main_args(tmp_path), "--overlay", str(overlay_file)]) == 0
+    installed = yaml.safe_load(config.read_text())
+    assert installed == pull.deep_merge(empty, overlay)
+    assert installed["proxies"] == []
+    assert installed["proxy-groups"] == [{"name": "PROXY", "type": "select", "proxies": ["REJECT"]}]
+    assert installed["rules"][-1] == "MATCH,PROXY"
+    assert "IP-CIDR,100.64.0.0/10,DIRECT,no-resolve" in installed["rules"]
+    assert validated == activated == [installed]
+    backups = list(tmp_path.glob("config.yaml.bak.*-pull"))
+    assert len(backups) == 1 and backups[0].read_text() == previous_text
+    assert config.stat().st_mode & 0o777 == 0o600
 
 
 def test_controller_safety_matches_render_invariant():
