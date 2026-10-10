@@ -51,5 +51,16 @@ networks:
     ipam:
       config:
         - subnet: 172.28.0.0/16       # 钉死，保证 echo-direct 的 172.28.0.5 在私网兜底范围内
-  frontnet: { driver: bridge, internal: true }
-  backnet: { driver: bridge, internal: true }
+  # 显式分配所有测试网段，避免 Docker 自动分配抢占 directnet 的固定网段。
+  frontnet:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.29.0.0/16
+  backnet:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16

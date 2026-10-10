@@ -23,7 +23,7 @@
 两件**正交**的事别混：**抓流量方式**（代理 vs TUN）×**跑在哪**（容器 vs 宿主机）。`Docker + TUN` 完全可行 —— privileged 容器（`NET_ADMIN` + `/dev/net/tun`）里 mihomo 建虚拟网卡、`auto-route`、`dns-hijack` 全在容器 netns 内，坏了只坏容器。
 
 **能测（隔离 netns 里，安全）：**
-- 全部代理 / 分流 / 故障切换 / 健康检查逻辑（OS 无关）。
+- 全部代理 / 分流 / 故障不切换 / 手动选择逻辑（OS 无关）。
 - TUN 透明捕获、`auto-route`、直连排除、`dns-hijack`、fake-ip 端到端（Linux TUN 路径）。
 - **私有网旁路（最关键，= rule#0「别断 mesh」）** —— 见下。
 
@@ -52,7 +52,7 @@
 ## 分层（便宜 → 贵）
 
 1. **golden 配置不变量**（零网络）—— `tests/`：断言 direct-list 三处覆盖一致、规则只引用 group 不指向节点、DIRECT 必须最前等。最安全，先跑（`pip install -e '.[dev]' && pytest`）。
-2. **Docker 集成**（隔离 Linux netns）—— `tests/integration/`：代理 + TUN + **私有网旁路**，实测路由 / 故障切换 / mesh 不断。
+2. **Docker 集成**（隔离 Linux netns）—— `tests/integration/`：代理 + TUN + **私有网旁路**，实测路由 / 故障不切换 / mesh 不断。
 3. **首次上线 + 安全网**：只放过了 1、2 的配置。`dead-man` timer（不续命就自动回退到已知 good / 纯直连）、reload 不 restart、apply 前先 validate。**break-glass 入口也必须在 direct-list 里**，且 rollback 机制**不依赖 mihomo 本身**。
    - macOS 残差默认压到这一层用安全网兜；真不放心，再加一次性 macOS VM 单独冒烟。
 
@@ -67,8 +67,8 @@
 - **fake-ip**：`fake-ip-filter-mode: rule`、私有域名的 `nameserver-policy` / `direct-nameserver` 需求未纳入断言。
 - **full 模式 DNS / IPv6（实战踩过，测试未覆盖）**：① full DNS 缺 `default-nameserver`(引导) → DNS 死锁、出网全断；② TUN 不接管 IPv6(`ipv6:true` + `tun.inet6-address`) → IPv6 直连泄漏、出口变本机真实地区(claude.ai 看 `loc=CN` 被区域封)。两者**只在真实部署暴露**（隔离 netns 无公网 IPv6、无真实 DNS 引导环境，难复现）→ 目前靠首次上线 dead-man + `curl .../cdn-cgi/trace` 看 `loc` 验。不变量见 [CONSTRAINTS.md](CONSTRAINTS.md)「full 模式必须项」。
 - **direct-list**：`domain_wildcard` → mihomo `DOMAIN-WILDCARD` 规则（其通配语义与 Clash 不同，且区别于 fake-ip-filter 的通配）；golden 已覆盖该映射。
-- **可用性**：fallback 健康检查频率预算；group health-check 不覆盖 `use:` provider —— 数据面 fallback 要么不用 `use:`、要么 provider 另配 health-check。
-- **集成断言**：量化切换耗时、用 `/proxies` 确认选中节点、长连接确认 chain；镜像固定版本。
+- **手动选择**：隔离容器里断开当前节点，断言连接失败且选择不变；手动选择另一个节点后恢复，reload / 重启保留选择。
+- **集成断言**：验证故障不切换与手动切换、用 `/proxies` 确认选中节点、长连接确认 chain；镜像固定版本。
 - **break-glass**：拆成 域名 / 固定 IP / 解析 DNS / 控制面入口，并在残差冒烟里实测 rollback timer 不依赖 mihomo。
 - **生产不变量**：controller 绑定（生产须 loopback / 受控）+ secret 必须存在。
 - `mihomo -t -f` 已接入 golden（装了才跑）；后续补坏配置负例语料。

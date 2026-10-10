@@ -2,7 +2,7 @@
 
 合成 socks5 节点指向 compose 里的 gost 上游 → build_subscription（full DNS 产物，TUN 在测试台关闭）→
 补上客户端实例设置（mixed-port/controller/allow-lan，订阅本身不含）→ 写 mihomo.generated.yaml。
-隔离网无公网，DNS 使用容器 system resolver，健康检查改指本地 echo-health。
+隔离网无公网，DNS 使用容器 system resolver；分组仅允许手动选择。
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ def _node(name: str, server: str) -> Node:
 
 
 def main() -> None:
-    # proxy 名 = compose 服务名，故障切换断言可直接 `compose stop <选中节点>`
+    # proxy 名 = compose 服务名，故障不切换断言可直接 `compose stop <选中节点>`
     # 无-geo 策略：隔离网无公网，跑不了 geosite/geoip 库。本集成测试只验结构化路由(私网/域名/切换)，
     # 不验 geo 规则（geo 由 golden + mihomo -t 验）。
     nogeo = {
@@ -53,13 +53,7 @@ def main() -> None:
         "bind-address": "*",
         "external-controller": "0.0.0.0:9090",
     })
-    # 隔离网无公网：健康检查指向本地 echo-health（否则上游全被判死，切换测试不准）。
-    # 只改有健康检查的组（fallback/url-test）；PROXY 是 select，无 url。
-    for g in cfg.get("proxy-groups", []):
-        if g.get("type") in ("fallback", "url-test"):
-            g["url"] = "http://echo-health:5678"
-            g["expected-status"] = "200"
-            g["interval"] = 10
+    assert all(g["type"] == "select" for g in cfg["proxy-groups"])
     (HERE / "mihomo.generated.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
     print("generated mihomo.generated.yaml from render_subscription output")
 

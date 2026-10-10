@@ -39,30 +39,21 @@ fetch → normalize → tag → prune → render → validate
    `dns.proxy-server-nameserver` 作为来源级节点连接依赖。每次成功摄入把节点与该元数据作为订阅的
    完整快照，保存上游原序；失败不替换旧快照。
 3. **tag**：auto（正则）+ manual（映射）；未见过的指纹进隔离区。
-4. **prune**：按健康历史剔除长期不健康节点（阈值/时间窗待定）。
+4. **prune**：依据人工隔离标记过滤；不依据健康状态自动剔除节点。
 5. **render**：按模板渲染**某个 target** 的 mihomo 配置（inline proxies + 标签 group + 规则 + 注入 direct-list + per-target overlay）；输出前过滤不支持 UDP 的节点。
 6. **validate**：mihomo 配置自检 + schema 校验；失败即阻断。
 
 **送达不在核心流水线里**：conduit 产出 per-target 工件，怎么送到主机、怎么 reload，由调用方决定（conduit 至多提供通用 hook：订阅侧参考实现 `scripts/conduit-mihomo-pull.py`）。
 
-## 输出形态（影响健康检查，要先定）
-节点写进配置有两种形态，二选一 —— 它决定故障切换 / 剔除能不能生效：
-- **top-level `proxies` + group 直接列成员**：group 的 health-check 覆盖每个节点。简单直接，推荐起步。
-- **conduit 生成 `file`/`inline` proxy-provider + group `use:`**：更贴 mihomo 习惯，但 group health-check **不覆盖 `use:` 来的节点**，必须改用 **provider 级 health-check**，否则切换 / 剔除失效。
-两种都一样：原始不可信订阅由 conduit 抓 + 清洗，绝不让 mihomo 直接拉。
+## 输出形态与选择
 
-## 健康回路（关联可用性目标与监控目标）
-
-```text
-mihomo health-check → 指标存储 → 生成器读「过去 N 时长不健康比例」→ prune 剔除 → 重新生成
-```
-
-- conduit 只消费一个标准的「节点健康历史」接口，schema 大致：`access_id / rendered_proxy_name / target / group / ts / status / latency / source`。关键是把 mihomo runtime 里的 proxy 名稳定映射回 `access_id`。
-- 指标怎么采、存哪（Prometheus / 别的）是**部署细节，调用方定**。
+节点写在 top-level `proxies`，策略组直接列出成员，所有代理策略组仅使用 `select`。
+不生成自动测速、故障切换或负载均衡分组；节点断开时保留当前选择，由用户手动切换。
+Mihomo 通过 `profile.store-selected` 保存选择；健康数据只能供诊断，不能触发成员替换。
 
 ## 规则结构（已落地 `conduit/policy.py`）
 - 模型 =「规则 = 一组匹配 → 一个目标组」(行业主流 category→provider→group)。`DEFAULT_POLICY` = `routes`(每条 `{name, to:目标组, geosite/geoip/rule_set/domain_suffix/domain/ip_cidr/process_name/dst_port}`，顺序即优先级) + `final`(兜底组)。规则只引用**组名**，永不引用订阅/节点。
-- **目标在 render 期校验存在性**：`to`/`final` 不在 {DIRECT,REJECT,PROXY,AUTO,各地区组} 就落到 `final`/PROXY，保证 mihomo 配置合法。
+- **目标在 render 期校验存在性**：`to`/`final` 不在 {DIRECT,REJECT,PROXY,各地区组} 就落到 `final`/PROXY，保证 mihomo 配置合法。
 - 匹配来源：内置 `geosite`/`geoip`(mihomo 自带 geo 库，cn/广告大类) + `rule_set`(MetaCubeX `.mrs` 外部规则集，引用而非拷贝、自动更新)。**`.mrs` 只支持 `domain`/`ipcidr`，不支持 `classical`** → process/port 等用显式 `process_name`/`dst_port` 渲成 PROCESS-NAME/DST-PORT。
 - **可编辑**：策略存 DB(`meta` key=`policy`)，无则回落仓库 `DEFAULT_POLICY`；页面 / `PUT /api/policy` 改。`rule_providers` 服务端控制(防 PUT 注入 URL → SSRF)、geosite/geoip 走服务端白名单。
 - **部署侧 mesh 旁路输入**：调用方可通过 `CONDUIT_MESH_DOMAIN_SUFFIXES` 注入私有 mesh / MagicDNS 后缀，
@@ -76,11 +67,10 @@ mihomo health-check → 指标存储 → 生成器读「过去 N 时长不健康
   因管理 API 暂无认证，服务必须只绑定 loopback 或受 ACL 保护的私网。
 
 ## 分组 + 订阅输出（已落地）
-- **地区分组**(`conduit/tags.py`)：`region_of` **文本关键词优先、旗帜 emoji 兜底**(机场常把台湾标 🇨🇳)；
-  render 按 region 分组 = `PROXY`(select:[AUTO,各地区]) + `AUTO`(fallback 外壳：优先隐藏
-  `AUTO-FAST` url-test, tolerance=200，再用原始节点兜底) + 每地区一个 fallback 组。地区组自身按固定地区序
-  展示；组内节点按“订阅 position → 上游 position”排列，形成确定的 fallback 优先级。`AUTO-FAST`
-  仍跨全部节点按延迟选优。标签按 access_id 存 DB、跟节点走。
+- **地区分组**(`conduit/tags.py`)：`region_of` 文本关键词优先、旗帜 emoji 兜底。
+  `PROXY` 手动选择地区，每个地区组再手动选择节点；全部为 `select`。地区入口固定排序，
+  组内按“订阅 position → 上游 position”排列。标签按 access_id 存 DB。
+  Clash/Mihomo、Stash、Shadowrocket 和 Surge 的配置均禁止自动切换；URI 节点 feed 本身不含策略，须配合生成的配置使用。
 - **节点显示名**：服务输出统一使用 `[订阅名] 原节点名`；订阅改名后下一次渲染立即使用新前缀，
   撞名再追加稳定短标识。
 - **服务以订阅形态下发**：`conduit-service` 先把节点池+分组+规则编译成同一份 Clash/Mihomo

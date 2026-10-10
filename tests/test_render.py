@@ -50,7 +50,8 @@ def test_render_output_satisfies_invariants():
 def test_render_structure():
     cfg = _render_cfg()
     assert {p["name"] for p in cfg["proxies"]} == {"up-a", "up-b"}
-    assert cfg["proxy-groups"][0]["name"] == "PROXY"
+    assert cfg["proxy-groups"][0] == {"name": "PROXY", "type": "select", "proxies": ["up-a", "up-b"]}
+    assert cfg["profile"]["store-selected"] is True
     assert cfg["rules"][0].startswith("DOMAIN,")   # direct 在最前
     assert cfg["rules"][-1] == "MATCH,PROXY"
     assert cfg["dns"]["enhanced-mode"] == "fake-ip"

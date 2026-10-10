@@ -182,12 +182,12 @@ def test_shadowrocket_config_references_node_feed_and_maps_groups_and_rules():
     profile = rendered.content
     assert "update-url = https://conduit.example/sub/shadowrocket-config?token=secret" in profile
     assert (
-        "HK = fallback,conduit,use=true,policy-regex-filter=^@HK:,"
-        "interval=60,timeout=2"
+        "HK = select,conduit,use=true,policy-regex-filter=^@HK:"
     ) in profile
-    assert "US = fallback,conduit,use=true,policy-regex-filter=^@US:" in profile
-    assert "AUTO = url-test,conduit,use=true" in profile
-    assert "PROXY = select,AUTO,HK,US" in profile
+    assert "US = select,conduit,use=true,policy-regex-filter=^@US:" in profile
+    assert "AUTO =" not in profile
+    assert "fallback," not in profile and "url-test," not in profile
+    assert "PROXY = select,HK,US" in profile
     assert "/geosite/category-ai-!cn.list,US" in profile
     assert "/geoip/cn.list,DIRECT" in profile
     assert "/geoip/cn.list,DIRECT,no-resolve" not in profile
@@ -212,8 +212,8 @@ def test_shadowrocket_config_sanitizes_group_and_rejects_unsafe_subscription_nam
     ]
     config["rules"] = ["DOMAIN,video.example,流=媒体#", "MATCH,PROXY"]
     profile = render_shadowrocket_config(config).content
-    assert "流 媒体 = fallback,conduit,use=true,policy-regex-filter=^@流_媒体:" in profile
-    assert "PROXY = select,AUTO,流 媒体" in profile
+    assert "流 媒体 = select,conduit,use=true,policy-regex-filter=^@流_媒体:" in profile
+    assert "PROXY = select,流 媒体" in profile
     assert "DOMAIN,video.example,流 媒体" in profile
     with pytest.raises(ValueError, match="节点订阅名称非法"):
         render_shadowrocket_config(config, subscription_name="bad,name")
@@ -290,11 +290,12 @@ def test_surge_profile_maps_nodes_groups_rules_and_reports_omissions():
     assert "Hysteria 2 = hysteria2, hy.example, 443, password=hy-pass" in profile
     assert "download-bandwidth=100" in profile
     assert "VLESS only =" not in profile
-    assert "PROXY = select, AUTO, HK, US" in profile
+    assert "PROXY = select, HK, US" in profile
     group_lines = profile.split("[Proxy Group]\n", 1)[1].split("\n\n", 1)[0].splitlines()
     assert [line.split(" =", 1)[0] for line in group_lines] == [
-        "HK", "US", "AUTO-FAST", "AUTO", "PROXY"
+        "HK", "US", "PROXY"
     ]
+    assert "fallback," not in profile and "url-test," not in profile
     assert "/geosite/category-ai-!cn.list,US" in profile
     assert "/geosite/cn.list,DIRECT" in profile
     assert "/geoip/cn.list,DIRECT,no-resolve" in profile
@@ -338,8 +339,8 @@ def test_surge_sanitizes_region_group_and_rule_target_together():
     ]
     config["rules"] = ["DOMAIN,video.example,流=媒体#", "MATCH,PROXY"]
     profile = render_surge_subscription(config).content
-    assert "流 媒体 = fallback, Node" in profile
-    assert "PROXY = select, AUTO, 流 媒体" in profile
+    assert "流 媒体 = select, Node" in profile
+    assert "PROXY = select, 流 媒体" in profile
     assert "DOMAIN,video.example,流 媒体" in profile
 
 
@@ -350,3 +351,14 @@ def test_surge_rejects_snapshot_with_only_unsupported_protocols():
     }
     with pytest.raises(NoCompatibleProxies):
         render_surge_subscription(_config([proxy]))
+
+
+@pytest.mark.parametrize("export", [render_shadowrocket_config, render_surge_subscription])
+def test_legacy_auto_rule_targets_become_manual_proxy(export):
+    cfg = _config([{"name": "Node", "type": "trojan", "server": "node.example", "port": 443, "password": "p", "udp": True}])
+    cfg["rules"] = ["DOMAIN,old.example,AUTO", "MATCH,AUTO-FAST"]
+    profile = export(cfg).content
+    assert "DOMAIN,old.example,PROXY" in profile
+    assert "FINAL,PROXY" in profile
+    assert "AUTO =" not in profile and "AUTO-FAST =" not in profile
+    assert "fallback," not in profile and "url-test," not in profile

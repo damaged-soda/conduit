@@ -61,7 +61,7 @@ Clash/Mihomo（如 Clash Verge）、Stash、Shadowrocket（节点订阅 + 配置
 
 **标签 / 分组**（节点 → 地区组）
 - 每节点存 `region`（auto `region_of` + 人工覆盖）+ `quarantined`（隔离），按 access_id 跟着节点走
-- `GET /api/groups`（可用目标组：DIRECT/REJECT/PROXY/AUTO + 各地区）
+- `GET /api/groups`（可用目标组：DIRECT/REJECT/PROXY + 各地区）
 
 **分流策略**（规则面，category→provider→group；DB 为准，无则回落仓库 `DEFAULT_POLICY`）
 - `GET/PUT/DELETE /api/policy`、`GET /api/categories`（geosite/geoip 白名单）、`GET /api/ruleset?kind=&name=`（看类别里匹配啥）
@@ -80,7 +80,7 @@ Clash/Mihomo（如 Clash Verge）、Stash、Shadowrocket（节点订阅 + 配置
   ss/vmess/trojan/vless/hysteria/hysteria2，无法可靠映射的节点跳过。节点名会带 `@地区:` 前缀，
   供完整配置按 conduit 的地区标签精确分组。
 - `GET /sub/shadowrocket-config?token=&subscription_name=conduit`：Shadowrocket 完整配置
-  （`[General]` / `[Proxy Group]` / `[Rule]`），含地区组、`AUTO` 和与 Clash/Surge 同源的分流规则。
+  （`[General]` / `[Proxy Group]` / `[Rule]`），含手动地区组和与 Clash/Surge 同源的分流规则。
   Shadowrocket 把节点订阅与配置分开管理：先导入上一条节点 URL，并把订阅名称设为
   `subscription_name`（默认 `conduit`），再导入本配置 URL；两者之后各自更新。配置通过
   `use=true` 引用同名节点订阅，而不是复制一份节点凭据。Shadowrocket 当前未文档化的
@@ -94,8 +94,8 @@ Clash/Mihomo（如 Clash Verge）、Stash、Shadowrocket（节点订阅 + 配置
   目标域名。其他订阅 DNS 字段仍全部丢弃；相同节点域名声明不同专用 DNS 时，整份 `full=1`
   输出返回 409（`pure` 不受影响）。启用来源 policy 后，未匹配节点使用普通 `nameserver`；已有
   `nameserver-policy` 会同步到节点 policy，`fallback` 不作为有序兜底继承。
-- 导出节点名为 `[订阅名] 原节点名`。每个地区 `fallback` 的成员顺序为“订阅优先级 →
-  上游原序”；默认 `AUTO-FAST` 仍跨全部节点按延迟选优。拖动后服务端产物立即变化，客户端刷新订阅后生效。
+- 导出节点名为 `[订阅名] 原节点名`。`PROXY` 和每个地区组均为手动 `select`，不生成自动选优或故障切换组；节点断开时不会换出口。组内按“订阅优先级 → 上游原序”排列。
+  服务更新不会主动修改客户端；须刷新订阅并移除客户端本地的自动分组覆盖项。初次从旧配置迁移时请确认手动选择，后续由客户端保存选择。
 - `GET /api/sub-token`（+ 页面显示可复制 URL）；token 保护节点凭据，DB `--no-access-log`
 
 **部署侧 mesh 旁路输入**（非 secret，不进 DB）：`spine/compose.yaml` 默认注入 Tailscale 通用常量
@@ -115,4 +115,4 @@ tailnet 名或进程名。
 ⚠️ **暂无认证** —— 默认只在 `127.0.0.1` / tailnet（Tailscale ACL）下开放；显式开启 LAN 即信任该局域网内的客户端，**别裸绑 0.0.0.0**（认证归 later）。
 
 ## TODO（后续增量）
-health（健康环 + 剔除）、traffic 监控 + 规则建议、订阅定时刷新、认证、secret 加密。
+health（只读健康诊断，不自动剔除）、traffic 监控 + 规则建议、订阅定时刷新、认证、secret 加密。
