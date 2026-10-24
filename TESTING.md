@@ -65,7 +65,7 @@
 - **私有网旁路变体**还没落成 compose（headscale + tailscale + privileged mihomo-TUN + peer 可达性断言）——设计见上「关键测试」。
 - **规则解析**：已做括号感知切分；SUB-RULE 递归校验仍 TODO。
 - **fake-ip**：`fake-ip-filter-mode: rule`、私有域名的 `nameserver-policy` / `direct-nameserver` 需求未纳入断言。
-- **full 模式 DNS / IPv6（实战踩过，测试未覆盖）**：① full DNS 缺 `default-nameserver`(引导) → DNS 死锁、出网全断；② TUN 不接管 IPv6(`ipv6:true` + `tun.inet6-address`) → IPv6 直连泄漏、出口变本机真实地区(claude.ai 看 `loc=CN` 被区域封)。两者**只在真实部署暴露**（隔离 netns 无公网 IPv6、无真实 DNS 引导环境，难复现）→ 目前靠首次上线 dead-man + `curl .../cdn-cgi/trace` 看 `loc` 验。不变量见 [CONSTRAINTS.md](CONSTRAINTS.md)「full 模式必须项」。
+- **full 模式 DNS / IPv6（实战踩过，测试未覆盖）**：① full DNS 缺 `default-nameserver`(引导) → DNS 死锁、出网全断；② TUN 不接管 IPv6(`ipv6:true` + `tun.inet6-address`) → IPv6 直连泄漏、出口变本机真实地区(claude.ai 看 `loc=CN` 被区域封)；③ macOS 系统 DNS 是私网路由器 → 查询走 `route-exclude` 绕过 `dns-hijack`，fake-ip 失效、解析随路由器 DNS 失败（容器里系统 DNS 不经 macOS resolver，复现不了）。三者**只在真实部署暴露**（隔离 netns 无公网 IPv6、无真实 DNS 引导环境，难复现）→ 目前靠首次上线 dead-man + `curl .../cdn-cgi/trace` 看 `loc` 验。不变量见 [CONSTRAINTS.md](CONSTRAINTS.md)「full 模式必须项」。
 - **direct-list**：`domain_wildcard` → mihomo `DOMAIN-WILDCARD` 规则（其通配语义与 Clash 不同，且区别于 fake-ip-filter 的通配）；golden 已覆盖该映射。
 - **手动选择**：隔离容器里断开当前节点，断言连接失败且选择不变；手动选择另一个节点后恢复，reload / 重启保留选择。
 - **集成断言**：验证故障不切换与手动切换、用 `/proxies` 确认选中节点、长连接确认 chain；镜像固定版本。
