@@ -35,7 +35,18 @@ Homebrew 的 root service 不支持用户 `services/mihomo.env` 覆盖；手动�
 Linux systemd 使用 service drop-in 的 `Environment=SKIP_SYSTEM_IPV6_CHECK=1`，
 然后 `daemon-reload` 并重启 mihomo。
 
+macOS 还须把系统 DNS 指进 TUN（[CONSTRAINTS.md](CONSTRAINTS.md)「full 模式必须项」）：
+给在用的每个网络服务设一个公网解析器，不用路由器或 mihomo 自己的地址。
+
+```sh
+networksetup -listallnetworkservices
+sudo networksetup -setdnsservers Ethernet 223.5.5.5   # Wi-Fi 等在用的服务各设一次
+sudo networksetup -setdnsservers Ethernet empty       # 回退：恢复 DHCP 下发的
+```
+
 验收须同时检查：controller `/configs` 的 `tun.inet6-address` 非空；公网 IPv4/IPv6
 目的地址均走 TUN；私有网/SSH 仍可达；强制 IPv6 的请求在 mihomo 连接记录中命中
-预期分流。对比同一公开 URL 的默认请求、`curl -4`、`curl -6` 和显式 HTTP 代理请求，
+预期分流；macOS 上 `dscacheutil -q host -a name github.com` 返回 fake-ip 段
+（`198.18.0.0/16` 或 TUN 的 IPv6 段），不是真实地址。`dig github.com @<路由器>` 返回真实地址、
+`dig github.com @223.5.5.5` 返回 fake-ip，说明劫持只截得到进了 TUN 的查询。对比同一公开 URL 的默认请求、`curl -4`、`curl -6` 和显式 HTTP 代理请求，
 不能把节点名称、Cloudflare PoP 或 IPv4 请求成功当作没有 IPv6 泄漏的证明。

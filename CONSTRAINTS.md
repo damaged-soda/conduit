@@ -27,11 +27,12 @@
 - validate 阶段必须检查这三处覆盖一致。
 
 ## full 模式（TUN）必须项
-full（带 dns+tun）的配置除上面三处外，还有三条不变量，缺一即出事（实战踩过）：
+full（带 dns+tun）的配置除上面三处外，还有以下不变量，缺一即出事（实战踩过）：
 - **TUN 必须同时接管 IPv6**：`ipv6: true` + `dns.ipv6: true` + `tun.inet6-address`（auto-route 才会把 `::/0` 也指向 TUN）。否则系统 IPv6 默认路由仍在物理网卡，浏览器走 IPv6/HTTP3 会**绕过代理直连** → 出口变成本机真实地区 → 按区域封的站（如 claude.ai 看到 `loc=CN`）直接不可用。`route-exclude` 须含 IPv6 本地段（`::1`/`fc00::/7`（含 overlay ULA）/`fe80::/10`），保私有网/SSH 不断。
 - **宿主启动不能静默取消 IPv6 接管**：mihomo 启动时若尚未检测到系统 IPv6，会忽略配置里的 TUN IPv6 地址；之后网卡取得公网 IPv6 也不能据此认定 TUN 已补齐。要求双栈接管的宿主须在 mihomo 服务环境设置 `SKIP_SYSTEM_IPV6_CHECK=1`，重启后验证 controller 的 `tun.inet6-address` 和实际 IPv6 路由；仅检查 YAML 或 `mihomo -t` 不够。该变量属于宿主服务配置，不是订阅 YAML。见 [宿主启动与验证](README.md#宿主启动与验证)。
 - **TUN 里的真实 IP 连接必须能还原 DIRECT 域名上下文**：full 模式遇到 DIRECT 域名时必须开启 `sniffer`（至少 TLS/443 + QUIC/443 + HTTP/80，`parse-pure-ip: true`，`override-destination: true`），并把这些域名放进 `force-domain` 记录意图。否则 fake-ip 放行后的真实 AAAA 连接进入 TUN 时只剩 IP，`DOMAIN-SUFFIX,...,DIRECT` 可能无法命中，控制面/mesh 域名会被透明代理路径误伤。
 - **DNS 必须有 `default-nameserver`（引导）**：含 `system` 任何环境可引导。否则 mihomo 没法做最初解析（连 DoH 服务器都解析不了）→ DNS 引导死锁 → 出网全断。
+- **macOS 宿主的系统 DNS 必须进 TUN**：`dns-hijack` 只截进了 TUN 的 DNS 包。DHCP 下发的系统 DNS 通常是路由器的私网地址，落在 rule#0 的 `route-exclude-address` 里，查询直连路由器、mihomo 收不到 → 域名拿到真实 IP，fake-ip 不生效，分流只剩 sniffer 补救，路由器 DNS 一出错就解析失败（`Could not resolve host`）。宿主须给在用的每个网络服务手动设一个不在排除段里的公网解析器（如 `223.5.5.5`）：TUN 在时被劫持，mihomo 停了直连仍能解析。不能设成 mihomo 自己的地址（`198.18.0.2`）：mihomo 一停全机断解析，`default-nameserver` 里的 `system` 也会回指自己。Linux 用 systemd-resolved 时，mihomo 把 TUN 网卡登记为全部域名（`~.`）的 DNS，不需要另设。只有路由器能答的局域网名字按「直连列表」走 `nameserver-policy`。该项属于宿主配置，不是订阅 YAML。见 [宿主启动与验证](README.md#宿主启动与验证)。
 - **订阅自带节点 DNS 必须按来源域名隔离**：仅允许摄入 `dns.proxy-server-nameserver`，不得继承订阅的
   普通 `nameserver` / 监听 / fake-ip 等全局设置；为该来源实际输出的节点域名编译
   `proxy-server-nameserver-policy`。已有 `nameserver-policy` 同步给其他节点域名；未匹配节点走普通
