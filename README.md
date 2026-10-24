@@ -41,7 +41,12 @@ macOS 还须把系统 DNS 指进 TUN（[CONSTRAINTS.md](CONSTRAINTS.md)「full �
 ```sh
 networksetup -listallnetworkservices
 sudo networksetup -setdnsservers Ethernet 223.5.5.5   # Wi-Fi 等在用的服务各设一次
-sudo networksetup -setdnsservers Ethernet empty       # 回退：恢复 DHCP 下发的
+```
+
+只在需要回退时，恢复 DHCP 下发的 DNS（恢复后查询又会绕过 TUN）：
+
+```sh
+sudo networksetup -setdnsservers Ethernet empty
 ```
 
 验收须同时检查：controller `/configs` 的 `tun.inet6-address` 非空；公网 IPv4/IPv6
