@@ -38,9 +38,14 @@ DEFAULT_POLICY: dict = {
     # 路由：一组匹配 → 一个目标，顺序即优先级
     "routes": [
         {"name": "广告", "to": "REJECT", "geosite": ["category-ads-all"]},
-        {"name": "中国大陆", "to": "DIRECT", "geosite": ["cn"], "geoip": ["CN"]},
+        {"name": "中国大陆", "to": "DIRECT", "geosite": ["cn"]},
         {"name": "AI（ChatGPT/Claude…）", "to": "US", "rule_set": ["ai"]},
         {"name": "流媒体", "to": "HK", "rule_set": ["netflix", "disney", "youtube"]},
+        # 已知境外域名先送代理，免得下一条为它们查国内 DNS。
+        {"name": "国外（非中国）", "to": "PROXY", "geosite": ["geolocation-!cn"]},
+        # 两份名单都不认识的域名解析一次，落在国内 IP 的直连（MetaCubeX 参考模板的顺序）：
+        # 名单没收录的国内服务不再绕境外节点。
+        {"name": "国内 IP", "to": "DIRECT", "geoip": ["CN"], "resolve": True},
     ],
     "final": "PROXY",  # 其余兜底走哪个组
 }
@@ -50,13 +55,15 @@ def policy_rules(policy: dict, resolve=None) -> list[str]:
     """策略 → mihomo 规则串（不含 baseline 私网兜底 + 调用方 direct-list + 末尾 MATCH）。
 
     resolve(to)→to：render 传入，把指向「不存在的组」的 route 落到 final（默认原样）。
-    ipcidr 类（geoip / ipcidr 的 rule_set）带 no-resolve。
+    IP 类匹配（ip_cidr / geoip / ipcidr 的 rule_set）默认带 no-resolve，只匹配本来就是 IP 的连接；
+    route 设 `resolve` 时去掉，域名连接先解析、再按 IP 匹配。
     """
     resolve = resolve or (lambda to: to)
     providers = policy.get("rule_providers", {})
     rules: list[str] = []
     for route in policy.get("routes", []):
         to = resolve(route["to"])
+        no_resolve = "" if route.get("resolve") else ",no-resolve"
         # 显式匹配（拓扑绕行：tailnet 域名 / DERP / 控制 IP / ssh 进程 / 端口）
         for d in route.get("domain_suffix", []):
             rules.append(f"DOMAIN-SUFFIX,{d},{to}")
@@ -64,7 +71,7 @@ def policy_rules(policy: dict, resolve=None) -> list[str]:
             rules.append(f"DOMAIN,{d},{to}")
         for c in route.get("ip_cidr", []):
             rt = "IP-CIDR6" if ":" in c else "IP-CIDR"
-            rules.append(f"{rt},{c},{to},no-resolve")
+            rules.append(f"{rt},{c},{to}{no_resolve}")
         for p in route.get("process_name", []):
             rules.append(f"PROCESS-NAME,{p},{to}")
         for p in route.get("dst_port", []):
@@ -74,11 +81,11 @@ def policy_rules(policy: dict, resolve=None) -> list[str]:
             if name not in providers:  # 编辑后可能引用未声明 provider → 跳过，别产坏配置
                 continue
             ipcidr = providers[name].get("behavior") == "ipcidr"
-            rules.append(f"RULE-SET,{name},{to}" + (",no-resolve" if ipcidr else ""))
+            rules.append(f"RULE-SET,{name},{to}" + (no_resolve if ipcidr else ""))
         for site in route.get("geosite", []):
             rules.append(f"GEOSITE,{site},{to}")
         for ip in route.get("geoip", []):
-            rules.append(f"GEOIP,{ip},{to},no-resolve")
+            rules.append(f"GEOIP,{ip},{to}{no_resolve}")
     return rules
 
 

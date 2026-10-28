@@ -78,6 +78,7 @@ class RouteIn(BaseModel):
     ip_cidr: list[str] = []
     process_name: list[str] = []
     dst_port: list[str] = []
+    resolve: bool = False  # IP 类匹配先解析域名（不带 no-resolve）
 
 
 class PolicyIn(BaseModel):
@@ -992,7 +993,7 @@ function readonlyView(){
     a.onclick=async(e)=>{e.preventDefault();insp.textContent='加载 '+nm+' …';try{const d=await j('/api/ruleset?kind='+(kind==='rule_set'?'ruleset':kind)+'&name='+encodeURIComponent(nm));insp.replaceChildren(el('b',nm+'：'+d.count+' 条匹配'),el('span','　'+d.sample.slice(0,50).join('   ')))}catch(e2){insp.textContent=nm+' 看不了：'+e2.message}};return a};
   const row3=(nm,cs,to)=>{const tr=document.createElement('tr');const c1=el('td',nm);c1.style.fontWeight='600';const c2=document.createElement('td');cs.forEach(e=>c2.append(e));tr.append(c1,c2,el('td','→ '+to));tbl.append(tr)};
   row3('私网 / tailnet',[el('span','rule#0 兜底')],'DIRECT');
-  POL.routes.forEach(r=>row3(r.name||'(规则)',MKEYS.flatMap(k=>(r[k]||[]).map(x=>chip(k,x))),r.to));
+  POL.routes.forEach(r=>row3(r.name||'(规则)',MKEYS.flatMap(k=>(r[k]||[]).map(x=>chip(k,x))).concat(r.resolve?[el('span','（解析域名）')]:[]),r.to));
   const nsp=(POL.dns||{}).nameserver_policy||{};
   if(Object.keys(nsp).length)row3('DNS解析(full)',[el('span',Object.entries(nsp).map(e=>e[0]+'→'+e[1]).join('  '))],'—');
   row3('其余',[el('span','兜底 MATCH')],POL.final);
@@ -1023,7 +1024,9 @@ function routeEditor(r,i){
   const up=btn('↑',()=>{if(i>0){const t=POL.routes[i-1];POL.routes[i-1]=POL.routes[i];POL.routes[i]=t;renderPolicy()}});
   const dn=btn('↓',()=>{if(i<POL.routes.length-1){const t=POL.routes[i+1];POL.routes[i+1]=POL.routes[i];POL.routes[i]=t;renderPolicy()}});
   const del=btn('✕ 删',()=>{POL.routes.splice(i,1);renderPolicy()});
-  d.append(row(el('b','#'+(i+1)),nm,el('span','→'),targetSel(r.to,v=>r.to=v),up,dn,del));
+  const rs=document.createElement('label');const rc=document.createElement('input');rc.type='checkbox';rc.checked=!!r.resolve;rc.onchange=()=>r.resolve=rc.checked;
+  rs.title='域名连接先解析，再按 IP 段 / geoip 匹配；不勾只匹配本来就是 IP 的连接';rs.append(rc,document.createTextNode('解析域名'));
+  d.append(row(el('b','#'+(i+1)),nm,el('span','→'),targetSel(r.to,v=>r.to=v),rs,up,dn,del));
   const mbox=document.createElement('div');mbox.style.cssText='margin:4px 0';
   MKEYS.forEach(k=>(r[k]||[]).forEach((n,idx)=>{
     const s=document.createElement('span');s.style.cssText='display:inline-block;border:1px solid #bbb;border-radius:10px;padding:1px 4px 1px 8px;margin:2px;font-size:11px';
