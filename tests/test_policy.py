@@ -29,9 +29,29 @@ def test_policy_rules_content_and_order():
     rules = policy_rules(DEFAULT_POLICY)
     assert "GEOSITE,category-ads-all,REJECT" in rules
     assert "GEOSITE,cn,DIRECT" in rules
-    assert "GEOIP,CN,DIRECT,no-resolve" in rules
     # reject 在 direct 之前
     assert rules.index("GEOSITE,category-ads-all,REJECT") < rules.index("GEOSITE,cn,DIRECT")
+    # 名单都不认识的域名解析后按国内 IP 直连；已知境外域名先送代理，不为它们查 DNS
+    assert "GEOIP,CN,DIRECT,no-resolve" not in rules
+    assert rules[-2:] == ["GEOSITE,geolocation-!cn,PROXY", "GEOIP,CN,DIRECT"]
+
+
+def test_route_resolve_drops_no_resolve_from_ip_matchers():
+    policy = {
+        "rule_providers": {"cnip": {"behavior": "ipcidr", "url": "https://x/cnip.mrs"}},
+        "routes": [
+            {"to": "DIRECT", "ip_cidr": ["1.2.3.0/24"], "geoip": ["CN"], "rule_set": ["cnip"]},
+            {"to": "DIRECT", "ip_cidr": ["1.2.3.0/24"], "geoip": ["CN"], "rule_set": ["cnip"], "resolve": True},
+        ],
+    }
+    assert policy_rules(policy) == [
+        "IP-CIDR,1.2.3.0/24,DIRECT,no-resolve",
+        "RULE-SET,cnip,DIRECT,no-resolve",
+        "GEOIP,CN,DIRECT,no-resolve",
+        "IP-CIDR,1.2.3.0/24,DIRECT",
+        "RULE-SET,cnip,DIRECT",
+        "GEOIP,CN,DIRECT",
+    ]
 
 
 def test_empty_policy_yields_no_rules():

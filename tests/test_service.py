@@ -765,6 +765,15 @@ def test_policy_edit_and_reset():
     assert c.get("/api/policy").json()["custom"] is False  # 恢复默认
 
 
+def test_policy_resolve_flag_round_trips():
+    c = _client()
+    pol = {"routes": [{"name": "国内 IP", "to": "DIRECT", "geoip": ["CN"], "resolve": True}], "final": "PROXY"}
+    assert c.put("/api/policy", json=pol).status_code == 200
+    g = c.get("/api/policy").json()
+    assert g["policy"]["routes"][0]["resolve"] is True
+    assert "GEOIP,CN,DIRECT" in g["rules"] and "GEOIP,CN,DIRECT,no-resolve" not in g["rules"]
+
+
 def test_policy_put_rejects_bad():
     c = _client()
     assert c.put("/api/policy", json={"routes": [{"to": "X", "rule_set": ["nope"]}]}).status_code == 400
@@ -937,8 +946,8 @@ def test_sub_clash_has_china_direct_rules():
     c.post(f"/api/subscriptions/{sid}/import", json={"raw": FIXTURE})
     token = c.get("/api/sub-token").json()["token"]
     cfg = yaml.safe_load(c.get("/sub/clash", params={"token": token}).text)
-    assert "GEOSITE,cn,DIRECT" in cfg["rules"] and "GEOIP,CN,DIRECT,no-resolve" in cfg["rules"]
-    assert cfg["rules"][-1] == "MATCH,PROXY"
+    assert "GEOSITE,cn,DIRECT" in cfg["rules"]
+    assert cfg["rules"][-2:] == ["GEOIP,CN,DIRECT", "MATCH,PROXY"]
 
 
 def test_node_list_has_region_fields():

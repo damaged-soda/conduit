@@ -52,9 +52,10 @@ fetch → normalize → tag → prune → render → validate
 Mihomo 通过 `profile.store-selected` 保存选择；健康数据只能供诊断，不能触发成员替换。
 
 ## 规则结构（已落地 `conduit/policy.py`）
-- 模型 =「规则 = 一组匹配 → 一个目标组」(行业主流 category→provider→group)。`DEFAULT_POLICY` = `routes`(每条 `{name, to:目标组, geosite/geoip/rule_set/domain_suffix/domain/ip_cidr/process_name/dst_port}`，顺序即优先级) + `final`(兜底组)。规则只引用**组名**，永不引用订阅/节点。
+- 模型 =「规则 = 一组匹配 → 一个目标组」(行业主流 category→provider→group)。`DEFAULT_POLICY` = `routes`(每条 `{name, to:目标组, geosite/geoip/rule_set/domain_suffix/domain/ip_cidr/process_name/dst_port, resolve}`，顺序即优先级) + `final`(兜底组)。规则只引用**组名**，永不引用订阅/节点。
 - **目标在 render 期校验存在性**：`to`/`final` 不在 {DIRECT,REJECT,PROXY,各地区组} 就落到 `final`/PROXY，保证 mihomo 配置合法。
 - 匹配来源：内置 `geosite`/`geoip`(mihomo 自带 geo 库，cn/广告大类) + `rule_set`(MetaCubeX `.mrs` 外部规则集，引用而非拷贝、自动更新)。**`.mrs` 只支持 `domain`/`ipcidr`，不支持 `classical`** → process/port 等用显式 `process_name`/`dst_port` 渲成 PROCESS-NAME/DST-PORT。
+- **IP 类匹配默认 `no-resolve`**：fake-ip 下连接几乎都带域名，`ip_cidr`/`geoip`/ipcidr 规则集默认只命中本来就是 IP 的连接。route 设 `resolve: true` 才去掉 `no-resolve`，让域名先解析再按 IP 匹配。默认策略照 MetaCubeX 参考模板：`geolocation-!cn` 先送代理，最后一条 `GEOIP,CN` 解析后直连，名单没收录的国内服务（如自家备案域名）不绕境外节点；只有两份名单都不认识的域名才查一次国内 DNS。
 - **可编辑**：策略存 DB(`meta` key=`policy`)，无则回落仓库 `DEFAULT_POLICY`；页面 / `PUT /api/policy` 改。`rule_providers` 服务端控制(防 PUT 注入 URL → SSRF)、geosite/geoip 走服务端白名单。
 - **部署侧 mesh 旁路输入**：调用方可通过 `CONDUIT_MESH_DOMAIN_SUFFIXES` 注入私有 mesh / MagicDNS 后缀，
   需要专用解析器时用 `CONDUIT_MESH_DNS_SERVER` 生成 `nameserver-policy`；通过
